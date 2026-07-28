@@ -20,7 +20,10 @@ def candidate_costs(
     velocity = trajectories[..., 4:6]
     acceleration = velocity[..., 1:, :] - velocity[..., :-1, :]
     jerk = acceleration[..., 1:, :] - acceleration[..., :-1, :]
-    smoothness = jerk.square().mean(dim=(-1, -2))
+    if jerk.shape[-2]:
+        smoothness = jerk.square().mean(dim=(-1, -2))
+    else:
+        smoothness = torch.zeros_like(goal_error)
     final_yaw = torch.atan2(trajectories[..., -1, 2], trajectories[..., -1, 3])
     desired_yaw = torch.atan2(goal[..., 2], goal[..., 3]).unsqueeze(-1)
     facing_error = torch.atan2(

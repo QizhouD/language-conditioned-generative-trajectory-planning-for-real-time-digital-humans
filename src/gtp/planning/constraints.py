@@ -27,9 +27,15 @@ def collision_mask(
 
 
 def kinematic_violation_mask(
-    trajectory: torch.Tensor, max_speed: float = 3.0, max_angular_speed: float = 4.0
+    trajectory: torch.Tensor,
+    max_speed: float = 3.0,
+    max_angular_speed: float = 4.0,
+    control_hz: float = 10.0,
 ) -> torch.Tensor:
     speed_invalid = trajectory[..., 7].abs().amax(dim=-1) > max_speed
+    negative_speed = trajectory[..., 7].amin(dim=-1) < 0.0
+    implied_speed = torch.linalg.vector_norm(trajectory[..., :2], dim=-1) * control_hz
+    displacement_invalid = implied_speed.amax(dim=-1) > max_speed
     angular_invalid = trajectory[..., 6].abs().amax(dim=-1) > max_angular_speed
     finite_invalid = ~torch.isfinite(trajectory).all(dim=(-1, -2))
-    return speed_invalid | angular_invalid | finite_invalid
+    return speed_invalid | negative_speed | displacement_invalid | angular_invalid | finite_invalid

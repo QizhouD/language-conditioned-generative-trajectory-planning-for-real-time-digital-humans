@@ -43,6 +43,7 @@ class RollingTrajectoryPlanner:
         if fallback.any():
             best[fallback] = 0.0
             best[fallback, :, 3] = 1.0
+            best_logits[fallback] = 0.0
         return {
             "trajectory": best,
             "actions": best_logits.argmax(dim=-1),
