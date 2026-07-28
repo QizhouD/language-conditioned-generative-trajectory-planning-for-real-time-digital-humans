@@ -1,0 +1,27 @@
+experiment: digital_human_flow_cpu
+seed: 7
+data_path: data/pilot_navigation.jsonl
+run_dir: runs/digital_human_flow_cpu
+
+model:
+  type: conditional_trajectory_flow
+  state_dim: 12
+  goal_dim: 5
+  obstacle_dim: 4
+  trajectory_dim: 8
+  horizon_steps: 30
+  hidden_dim: 64
+  layers: 2
+  heads: 4
+
+training:
+  epochs: 2
+  batch_size: 16
+  learning_rate: 0.0005
+  validation_fraction: 0.2
+
+loss:
+  flow: 1.0
+  action: 0.3
+  goal: 0.5
+  smoothness: 0.1

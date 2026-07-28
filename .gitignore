@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments and local tooling
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+
+# Generated datasets and model artifacts
+data/*.jsonl
+runs/
+results/
+*.pt
+*.pth
+*.onnx
+
+# OS files
+.DS_Store
+Thumbs.db

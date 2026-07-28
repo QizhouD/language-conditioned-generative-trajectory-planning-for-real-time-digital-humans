@@ -1,0 +1,27 @@
+experiment: digital_human_flow
+seed: 7
+data_path: data/synthetic_navigation.jsonl
+run_dir: runs/digital_human_flow
+
+model:
+  type: conditional_trajectory_flow
+  state_dim: 12
+  goal_dim: 5
+  obstacle_dim: 4
+  trajectory_dim: 8
+  horizon_steps: 30
+  hidden_dim: 256
+  layers: 4
+  heads: 8
+
+training:
+  epochs: 50
+  batch_size: 64
+  learning_rate: 0.0003
+  validation_fraction: 0.15
+
+loss:
+  flow: 1.0
+  action: 0.3
+  goal: 0.5
+  smoothness: 0.1
