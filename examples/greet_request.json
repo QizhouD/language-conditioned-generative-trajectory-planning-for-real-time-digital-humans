@@ -1,0 +1,39 @@
+{
+  "character": {
+    "position": [0.0, 0.0, 0.0],
+    "yaw": 0.0
+  },
+  "history": [
+    {
+      "position": [0.0, 0.0, 0.0],
+      "yaw": 0.0,
+      "velocity": [0.0, 0.0],
+      "angular_velocity": 0.0,
+      "action": 0,
+      "action_phase": 0.0,
+      "foot_contacts": [1.0, 1.0]
+    }
+  ],
+  "function_call": {
+    "function": "greet_person",
+    "arguments": {
+      "target_id": "visitor_7",
+      "preferred_distance": 1.2,
+      "hand": "right",
+      "emotion": "friendly"
+    }
+  },
+  "scene_objects": {
+    "visitor_7": {
+      "position": [3.5, 0.0, 2.0],
+      "yaw": 3.141592653589793
+    }
+  },
+  "obstacles": [
+    {
+      "center": [1.5, 0.5],
+      "radius": 0.35,
+      "kind": 0
+    }
+  ]
+}

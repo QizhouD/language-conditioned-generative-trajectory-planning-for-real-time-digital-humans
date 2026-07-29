@@ -99,7 +99,8 @@ def collate_trajectories(batch: list[dict[str, torch.Tensor]]) -> dict[str, torc
             obstacles[index, :o_count] = item["obstacles"]
             obstacle_valid[index, :o_count] = True
         else:
-            # A valid zero token avoids all-masked Transformer attention.
+            # A distant valid token avoids all-masked attention and phantom collisions.
+            obstacles[index, 0, :2] = 1_000_000.0
             obstacle_valid[index, 0] = True
 
     return {
