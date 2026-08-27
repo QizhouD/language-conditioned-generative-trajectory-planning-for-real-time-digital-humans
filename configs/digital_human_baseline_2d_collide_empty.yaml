@@ -1,0 +1,34 @@
+experiment: digital_human_baseline_2d_collide_empty
+seed: 7
+data_path: data/synthetic_navigation.jsonl
+run_dir: runs/digital_human_baseline_2d_collide_empty
+
+model:
+  type: deterministic_trajectory_transformer
+  state_dim: 12
+  goal_dim: 5
+  obstacle_dim: 4
+  trajectory_dim: 8
+  horizon_steps: 30
+  hidden_dim: 128
+  layers: 3
+  heads: 4
+
+training:
+  epochs: 40
+  batch_size: 64
+  learning_rate: 0.0003
+  validation_fraction: 0.15
+
+loss:
+  flow: 1.0
+  action: 0.3
+  goal: 0.5
+  smoothness: 2.0
+  smoothness_kind: second_diff
+  supervise_2d: true
+  collision: 2.0
+  collision_clearance: 0.3
+  path: 2.0
+  path_empty_only: true
+  path_occupied: 0

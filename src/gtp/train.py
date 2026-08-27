@@ -39,10 +39,15 @@ def batch_loss(
     model: nn.Module, batch: dict[str, torch.Tensor], weights: dict[str, float]
 ) -> tuple[torch.Tensor, dict[str, float]]:
     target = batch["trajectory"]
+    supervise_2d = weights.get("supervise_2d", False)
+    
     if isinstance(model, DeterministicTrajectoryBaseline):
         output = model(batch)
         prediction = output["trajectory"]
-        flow_loss = nn.functional.mse_loss(prediction, target)
+        if supervise_2d:
+            flow_loss = nn.functional.mse_loss(prediction[..., :2], target[..., :2])
+        else:
+            flow_loss = nn.functional.mse_loss(prediction, target)
     else:
         noise = torch.randn_like(target)
         time = torch.rand(target.shape[0], device=target.device)
@@ -58,10 +63,38 @@ def batch_loss(
     predicted_end = prediction[..., :2].sum(dim=1)
     target_end = target[..., :2].sum(dim=1)
     goal_loss = nn.functional.mse_loss(predicted_end, target_end)
-    predicted_velocity = prediction[..., 4:6]
-    smoothness_loss = (
-        (predicted_velocity[:, 1:] - predicted_velocity[:, :-1]).square().mean()
-    )
+    
+    smoothness_kind = weights.get("smoothness_kind", "first_diff")
+    smoothness_empty_boost = weights.get("smoothness_empty_boost", 1.0)
+    
+    if supervise_2d and smoothness_kind == "second_diff":
+        cumsum_pred = prediction[..., :2].cumsum(dim=1)
+        second_diff = cumsum_pred[:, 2:] - 2 * cumsum_pred[:, 1:-1] + cumsum_pred[:, :-2]
+        smoothness_loss = second_diff.square().mean()
+        
+        obstacle_centers = batch["obstacles"][..., :2]
+        center_norm = obstacle_centers.norm(dim=-1)
+        is_empty = (center_norm > 1e5).all(dim=-1)
+        if is_empty.any() and smoothness_empty_boost != 1.0:
+            empty_smooth = second_diff[is_empty].square().mean() if is_empty.sum() > 0 else 0.0
+            occupied_smooth = second_diff[~is_empty].square().mean() if (~is_empty).sum() > 0 else 0.0
+            empty_count = is_empty.sum().float()
+            occupied_count = (~is_empty).sum().float()
+            total_count = empty_count + occupied_count
+            smoothness_loss = (
+                (smoothness_empty_boost * empty_count * empty_smooth + occupied_count * occupied_smooth) 
+                / total_count if total_count > 0 else smoothness_loss
+            )
+    elif supervise_2d:
+        cumsum_pred = prediction[..., :2].cumsum(dim=1)
+        first_diff = cumsum_pred[:, 1:] - cumsum_pred[:, :-1]
+        smoothness_loss = (first_diff[:, 1:] - first_diff[:, :-1]).square().mean()
+    else:
+        predicted_velocity = prediction[..., 4:6]
+        smoothness_loss = (
+            (predicted_velocity[:, 1:] - predicted_velocity[:, :-1]).square().mean()
+        )
+    
     total = (
         weights["flow"] * flow_loss
         + weights["action"] * action_loss
@@ -75,7 +108,90 @@ def batch_loss(
         "goal": goal_loss.item(),
         "smoothness": smoothness_loss.item(),
     }
+    
+    if "collision" in weights and weights["collision"] > 0:
+        collision_loss = compute_collision_loss(
+            prediction, batch, weights
+        )
+        total += weights["collision"] * collision_loss
+        metrics["collision"] = collision_loss.item()
+    
+    if "path" in weights and weights["path"] > 0:
+        path_loss = compute_path_loss(
+            prediction, target, batch, weights
+        )
+        total += weights["path"] * path_loss
+        metrics["path"] = path_loss.item()
+    
     return total, metrics
+
+
+def compute_collision_loss(
+    prediction: torch.Tensor, batch: dict[str, torch.Tensor], weights: dict[str, float]
+) -> torch.Tensor:
+    cumsum_pred = prediction[..., :2].cumsum(dim=1)
+    
+    obstacles = batch["obstacles"]
+    obstacle_centers = obstacles[..., :2]
+    obstacle_radii = obstacles[..., 2]
+    obstacle_valid = batch["obstacle_valid"]
+    
+    collision_clearance = weights.get("collision_clearance", 0.3)
+    collision_kind = weights.get("collision_kind", "overlap")
+    
+    distances = torch.cdist(cumsum_pred, obstacle_centers)
+    effective_radius = obstacle_radii.unsqueeze(1) + collision_clearance
+    
+    if collision_kind == "clearance":
+        hard_penetration = torch.relu(obstacle_radii.unsqueeze(1) - distances)
+        band_penetration = torch.relu(effective_radius - distances)
+        penetration = hard_penetration.square() + 0.5 * band_penetration.square()
+    else:
+        penetration = torch.relu(effective_radius - distances).square()
+    
+    masked_penetration = penetration * obstacle_valid.unsqueeze(1).float()
+    collision_loss = masked_penetration.sum() / (obstacle_valid.sum().float() * cumsum_pred.shape[1] + 1e-8)
+    
+    return collision_loss
+
+
+def compute_path_loss(
+    prediction: torch.Tensor, target: torch.Tensor, 
+    batch: dict[str, torch.Tensor], weights: dict[str, float]
+) -> torch.Tensor:
+    cumsum_pred = prediction[..., :2].cumsum(dim=1)
+    cumsum_target = target[..., :2].cumsum(dim=1)
+    
+    path_empty_only = weights.get("path_empty_only", False)
+    path_occupied = weights.get("path_occupied", 0.0)
+    
+    obstacle_centers = batch["obstacles"][..., :2]
+    center_norm = obstacle_centers.norm(dim=-1)
+    is_empty = (center_norm > 1e5).all(dim=-1)
+    
+    path_mse = nn.functional.mse_loss(cumsum_pred, cumsum_target, reduction="none").mean(dim=(1, 2))
+    
+    if path_empty_only:
+        if is_empty.any():
+            path_loss = path_mse[is_empty].mean()
+        else:
+            path_loss = torch.tensor(0.0, device=prediction.device)
+    elif path_occupied > 0:
+        empty_loss = path_mse[is_empty].mean() if is_empty.any() else torch.tensor(0.0, device=prediction.device)
+        occupied_loss = path_mse[~is_empty].mean() if (~is_empty).any() else torch.tensor(0.0, device=prediction.device)
+        
+        empty_count = is_empty.sum().float()
+        occupied_count = (~is_empty).sum().float()
+        total_count = empty_count + occupied_count
+        
+        if total_count > 0:
+            path_loss = (empty_count * empty_loss + path_occupied * occupied_count * occupied_loss) / total_count
+        else:
+            path_loss = path_mse.mean()
+    else:
+        path_loss = path_mse.mean()
+    
+    return path_loss
 
 
 def main() -> None:

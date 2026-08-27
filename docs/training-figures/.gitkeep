@@ -1,0 +1,14 @@
+# Training Figures Directory
+
+This directory contains trajectory prediction comparison figures from experimental training runs.
+
+## Faculty-Approved Figures
+
+The following figures are referenced in TRAINING_HANDOFF.md:
+
+1. `trajectory-baseline-2d-collide-pred-vs-gt.png` - Collision avoidance results
+2. `trajectory-baseline-2d-path-pred-vs-gt.png` - Empty-scene path results
+3. `trajectory-baseline-2d-collide-empty-pred-vs-gt.png` - Contrast experiment
+4. `trajectory-baseline-2d-combo-pred-vs-gt.png` - Contrast experiment (failed)
+
+**Note:** The PNG files were attached to the task that created the training handoff and should be manually placed in this directory.
