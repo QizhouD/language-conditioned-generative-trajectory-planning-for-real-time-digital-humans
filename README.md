@@ -12,6 +12,20 @@ system such as SimpleText2Motion.
 See [docs/DIGITAL_HUMAN_ARCHITECTURE.md](docs/DIGITAL_HUMAN_ARCHITECTURE.md)
 for the system design and integration contract.
 
+## Embodied demo
+
+[Unity-digital-Human](https://github.com/QizhouD/LLM-NPC) is the embodiment layer
+for this planner: a Unity 6 scene where a language model answers the player in
+prose, tags each reply with one of the five motion intents below, and that intent
+becomes a plan request whose result drives the character's root transform at
+10 Hz. It mirrors `TrajectoryPlan` from
+[src/gtp/integrations/plan_export.py](src/gtp/integrations/plan_export.py) field
+for field in C#, so the two repositories share one contract.
+
+That demo currently runs on a procedural mock plan source, because every export
+from the trained checkpoint is a constraint-filter fallback. Fixing that is the
+top item in the training handoff.
+
 For training status, experimental 2D loss functions, and continuation instructions,
 see [docs/TRAINING_HANDOFF.md](docs/TRAINING_HANDOFF.md).
 
