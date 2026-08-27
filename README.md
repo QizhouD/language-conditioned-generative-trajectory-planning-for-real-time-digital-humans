@@ -12,6 +12,9 @@ system such as SimpleText2Motion.
 See [docs/DIGITAL_HUMAN_ARCHITECTURE.md](docs/DIGITAL_HUMAN_ARCHITECTURE.md)
 for the system design and integration contract.
 
+For training status, experimental 2D loss functions, and continuation instructions,
+see [docs/TRAINING_HANDOFF.md](docs/TRAINING_HANDOFF.md).
+
 ## MVP scope
 
 - Local-frame planar root trajectories at 10 Hz.

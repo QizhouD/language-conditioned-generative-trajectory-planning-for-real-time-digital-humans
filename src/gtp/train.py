@@ -39,10 +39,14 @@ def batch_loss(
     model: nn.Module, batch: dict[str, torch.Tensor], weights: dict[str, float]
 ) -> tuple[torch.Tensor, dict[str, float]]:
     target = batch["trajectory"]
+    supervise_2d = bool(weights.get("supervise_2d", False))
     if isinstance(model, DeterministicTrajectoryBaseline):
         output = model(batch)
         prediction = output["trajectory"]
-        flow_loss = nn.functional.mse_loss(prediction, target)
+        if supervise_2d:
+            flow_loss = nn.functional.mse_loss(prediction[..., :2], target[..., :2])
+        else:
+            flow_loss = nn.functional.mse_loss(prediction, target)
     else:
         noise = torch.randn_like(target)
         time = torch.rand(target.shape[0], device=target.device)
@@ -58,16 +62,59 @@ def batch_loss(
     predicted_end = prediction[..., :2].sum(dim=1)
     target_end = target[..., :2].sum(dim=1)
     goal_loss = nn.functional.mse_loss(predicted_end, target_end)
-    predicted_velocity = prediction[..., 4:6]
-    smoothness_loss = (
-        (predicted_velocity[:, 1:] - predicted_velocity[:, :-1]).square().mean()
-    )
+    if supervise_2d:
+        predicted_path = prediction[..., :2].cumsum(dim=1)
+        if str(weights.get("smoothness_kind", "first_diff")) == "second_diff":
+            # Discrete curvature: penalize left-right jitter, not step length.
+            pos = predicted_path
+            curve = (pos[:, 2:] - 2 * pos[:, 1:-1] + pos[:, :-2]).square().mean(dim=(1, 2))
+            empty_boost = float(weights.get("smoothness_empty_boost", 1) or 1)
+            if empty_boost != 1.0:
+                valid = batch["obstacle_valid"]
+                center_norm = torch.linalg.vector_norm(batch["obstacles"][..., :2], dim=-1)
+                real = valid & (center_norm <= 1e5)
+                empty = ~real.any(dim=1)
+                w = torch.where(empty, curve.new_full((), empty_boost), curve.new_ones(()))
+                smoothness_loss = (curve * w).mean()
+            else:
+                smoothness_loss = curve.mean()
+        else:
+            smoothness_loss = (
+                (predicted_path[:, 1:] - predicted_path[:, :-1]).square().mean()
+            )
+    else:
+        predicted_velocity = prediction[..., 4:6]
+        smoothness_loss = (
+            (predicted_velocity[:, 1:] - predicted_velocity[:, :-1]).square().mean()
+        )
     total = (
         weights["flow"] * flow_loss
         + weights["action"] * action_loss
         + weights["goal"] * goal_loss
         + weights["smoothness"] * smoothness_loss
     )
+    collision_weight = float(weights.get("collision", 0) or 0)
+    if collision_weight > 0:
+        pos = prediction[..., :2].cumsum(dim=1)
+        centers = batch["obstacles"][..., :2]
+        clearance = float(weights.get("collision_clearance", 0.3))
+        radii = batch["obstacles"][..., 2] + clearance
+        valid = batch["obstacle_valid"]
+        dist = torch.linalg.vector_norm(
+            pos.unsqueeze(2) - centers.unsqueeze(1), dim=-1
+        )
+        valid_f = valid.to(dtype=dist.dtype)
+        if str(weights.get("collision_kind", "overlap")) == "clearance":
+            raw_r = batch["obstacles"][..., 2]
+            hard = torch.relu(raw_r.unsqueeze(1) - dist)
+            band = torch.relu(radii.unsqueeze(1) - dist)
+            masked = (hard.square() + 0.5 * band.square()) * valid_f.unsqueeze(1)
+        else:
+            penetration = torch.relu(radii.unsqueeze(1) - dist)
+            masked = penetration.square() * valid_f.unsqueeze(1)
+        denom = valid_f.sum() * pos.shape[1]
+        collision_loss = masked.sum() / denom.clamp(min=1.0)
+        total = total + collision_weight * collision_loss
     metrics = {
         "loss": total.item(),
         "flow": flow_loss.item(),
@@ -75,6 +122,30 @@ def batch_loss(
         "goal": goal_loss.item(),
         "smoothness": smoothness_loss.item(),
     }
+    if collision_weight > 0:
+        metrics["collision"] = collision_loss.item()
+    path_weight = float(weights.get("path", 0) or 0)
+    if path_weight > 0:
+        pred_path = prediction[..., :2].cumsum(dim=1)
+        gt_path = target[..., :2].cumsum(dim=1)
+        per_sample = (pred_path - gt_path).square().mean(dim=(1, 2))
+        valid = batch["obstacle_valid"]
+        center_norm = torch.linalg.vector_norm(batch["obstacles"][..., :2], dim=-1)
+        real = valid & (center_norm <= 1e5)
+        empty = ~real.any(dim=1)
+        occupied = real.any(dim=1)
+        if bool(weights.get("path_empty_only", False)) and not bool(weights.get("path_occupied", 0)):
+            path_loss = per_sample[empty].mean() if empty.any() else per_sample.new_zeros(())
+        elif float(weights.get("path_occupied", 0) or 0) > 0:
+            empty_term = per_sample[empty].mean() if empty.any() else per_sample.new_zeros(())
+            occ_term = per_sample[occupied].mean() if occupied.any() else per_sample.new_zeros(())
+            occ_w = float(weights.get("path_occupied", 0) or 0)
+            path_loss = empty_term + occ_w * occ_term
+        else:
+            path_loss = per_sample.mean()
+        total = total + path_weight * path_loss
+        metrics["loss"] = total.item()
+        metrics["path"] = path_loss.item()
     return total, metrics
 
 
