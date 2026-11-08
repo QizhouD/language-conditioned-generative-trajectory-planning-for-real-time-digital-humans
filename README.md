@@ -14,7 +14,7 @@ for the system design and integration contract.
 
 ## Embodied demo
 
-[Unity-digital-Human](https://github.com/QizhouD/LLM-NPC) is the embodiment layer
+[LLM-NPC](https://github.com/QizhouD/LLM-NPC) is the embodiment layer
 for this planner: a Unity 6 scene where a language model answers the player in
 prose, tags each reply with one of the five motion intents below, and that intent
 becomes a plan request whose result drives the character's root transform at
