@@ -18,7 +18,8 @@ On branch `feat/root-motion-layer` the project stops learning pathfinding. The
 engine's NavMesh chooses the route; a flow model trained on real motion capture
 (LAFAN1) decides how the character moves along it. Data pipeline, model,
 constraints, baselines, preliminary held-out results and the `POST /plan` service
-are in [docs/ROOT_MOTION_LAYER.md](docs/ROOT_MOTION_LAYER.md). Everything below this
+are in [docs/ROOT_MOTION_LAYER.md](docs/ROOT_MOTION_LAYER.md); to run it, follow
+[docs/ROOT_MOTION_QUICKSTART.md](docs/ROOT_MOTION_QUICKSTART.md). Everything below this
 section describes the earlier navigation MVP, kept for the record.
 
 ## Embodied demo

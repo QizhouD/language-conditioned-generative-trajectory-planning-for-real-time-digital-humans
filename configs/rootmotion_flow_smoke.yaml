@@ -1,0 +1,30 @@
+# One-epoch install check (about a minute on a laptop CPU). Not a usable model.
+experiment: rootmotion_flow_smoke
+seed: 7
+data_path: data/lafan1_root.npz
+run_dir: runs/rootmotion_flow_smoke
+
+data:
+  train_subjects: [1, 2, 3]
+  val_subjects: [4]
+  test_subjects: [5]
+  train_stride: 4
+  eval_stride: 10
+  eval_epsilon: 0.25
+
+model:
+  hidden_dim: 64
+  encoder_layers: 1
+  decoder_layers: 2
+  heads: 4
+  dropout: 0.0
+  deterministic: false
+
+training:
+  epochs: 1
+  batch_size: 128
+  learning_rate: 0.0005
+  weight_decay: 0.01
+  warmup_steps: 20
+  ema_decay: 0.9
+  validate_every: 1
