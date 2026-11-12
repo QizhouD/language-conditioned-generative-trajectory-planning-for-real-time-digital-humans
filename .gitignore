@@ -15,6 +15,9 @@ env/
 
 # Generated datasets and model artifacts
 data/*.jsonl
+# Motion capture and anything extracted from it stays local (LAFAN1 is CC BY-NC-ND)
+data/lafan1/
+data/*.npz
 runs/
 results/
 *.pt

@@ -12,6 +12,15 @@ system such as SimpleText2Motion.
 See [docs/DIGITAL_HUMAN_ARCHITECTURE.md](docs/DIGITAL_HUMAN_ARCHITECTURE.md)
 for the system design and integration contract.
 
+## Current direction: the root-motion layer
+
+On branch `feat/root-motion-layer` the project stops learning pathfinding. The
+engine's NavMesh chooses the route; a flow model trained on real motion capture
+(LAFAN1) decides how the character moves along it. Data pipeline, model,
+constraints, baselines, preliminary held-out results and the `POST /plan` service
+are in [docs/ROOT_MOTION_LAYER.md](docs/ROOT_MOTION_LAYER.md). Everything below this
+section describes the earlier navigation MVP, kept for the record.
+
 ## Embodied demo
 
 [LLM-NPC](https://github.com/QizhouD/LLM-NPC) is the embodiment layer

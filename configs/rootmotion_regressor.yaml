@@ -1,0 +1,30 @@
+# Full-size run; needs a GPU. For a CPU-sized run use rootmotion_regressor_cpu.yaml.
+experiment: rootmotion_regressor
+seed: 7
+data_path: data/lafan1_root.npz
+run_dir: runs/rootmotion_regressor
+
+data:
+  train_subjects: [1, 2, 3]
+  val_subjects: [4]
+  test_subjects: [5]
+  train_stride: 1
+  eval_stride: 5
+  eval_epsilon: 0.25
+
+model:
+  hidden_dim: 256
+  encoder_layers: 2
+  decoder_layers: 6
+  heads: 8
+  dropout: 0.1
+  deterministic: true
+
+training:
+  epochs: 300
+  batch_size: 256
+  learning_rate: 0.0005
+  weight_decay: 0.01
+  warmup_steps: 200
+  ema_decay: 0.9995
+  validate_every: 10

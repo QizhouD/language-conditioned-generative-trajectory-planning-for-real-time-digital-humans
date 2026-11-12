@@ -9,11 +9,13 @@ description = "Conditional flow matching for interactive future-action generatio
 requires-python = ">=3.11"
 dependencies = [
   "torch>=2.3",
+  "numpy>=1.26",
   "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+plots = ["matplotlib>=3.8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
