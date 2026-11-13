@@ -41,12 +41,12 @@ class PlannerConfig:
 
 
 def goal_within_reach(
-    batch: dict[str, torch.Tensor], gait_speed: tuple[float, ...], horizon_steps: int,
+    batch: dict[str, torch.Tensor], speed: torch.Tensor, horizon_steps: int,
     control_hz: int = CONTROL_HZ,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Rows whose path ends at the goal no farther than gait speed x plan duration, and the goal.
+    """Rows whose path ends at the goal no farther than speed x plan duration, and the goal.
 
-    An empty path means standing at the goal, which is the origin.
+    ``speed`` is per row (m/s). An empty path means standing at the goal (the origin).
     """
     count = batch["path_valid"].sum(dim=1)
     rows = torch.arange(len(count), device=count.device)
@@ -54,10 +54,9 @@ def goal_within_reach(
     ends = (count == 0) | (batch["path"][rows, last, 3] > 0.5)
     remaining = torch.where(count > 0, batch["path"][rows, last, 2] * POSITION_SCALE,
                             torch.zeros_like(batch["path"][:, 0, 2]))
-    speed = torch.as_tensor(gait_speed, dtype=remaining.dtype, device=remaining.device)[batch["gait"]]
     polyline, _ = path_polyline(batch)
     goal = polyline[rows, count]
-    return ends & (remaining <= speed * horizon_steps / control_hz), goal
+    return ends & (remaining <= speed.to(remaining.dtype) * horizon_steps / control_hz), goal
 
 
 def initial_velocity(batch: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -105,14 +104,51 @@ class RootMotionPlanner:
         )
         return corridor | kinematic
 
+    def reference_speed(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Per-row speed (m/s) for the spring fallback and goal-aware selection.
+
+        The gait median, or the row's target speed when the model is speed-conditioned
+        and one is given. An unconditioned model ignores target_speed entirely, so old
+        checkpoints behave exactly as before.
+        """
+        speed = torch.as_tensor(self.stats.gait_speed, dtype=torch.float32,
+                                device=batch["gait"].device)[batch["gait"]]
+        target = batch.get("target_speed")
+        if self.model.speed_conditioning and target is not None:
+            target = target.reshape(-1).to(speed.dtype)
+            speed = torch.where(torch.isfinite(target), target, speed)
+        return speed
+
+    def clip_target_speed(
+        self, batch: dict[str, torch.Tensor],
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        """Clamp given target speeds into the training range of their gait.
+
+        Returns the batch with clamped speeds and a per-row mask of the rows that changed.
+        """
+        speed = batch["target_speed"].reshape(-1).to(torch.float32)
+        given = torch.isfinite(speed)
+        if self.stats.speed_range is None:
+            return batch, torch.zeros_like(given)
+        ranges = torch.as_tensor(self.stats.speed_range, dtype=speed.dtype, device=speed.device)
+        low, high = ranges[batch["gait"], 0], ranges[batch["gait"], 1]
+        clamped = torch.minimum(torch.maximum(speed, low), high)
+        changed = given & (clamped != speed)
+        return {**batch, "target_speed": torch.where(given, clamped, speed)}, changed
+
     def spring_fallback(self, batch: dict[str, torch.Tensor], row: int) -> np.ndarray:
         polyline, valid = path_polyline(batch)
         vertices = polyline[row][valid[row]].cpu().numpy()
         count = int(batch["path_valid"][row].sum())
         ends_at_goal = count == 0 or bool(batch["path"][row, count - 1, 3] > 0.5)
+        speed = self.stats.gait_speed[int(batch["gait"][row])]  # float64, exactly as before
+        target = batch.get("target_speed")
+        if self.model.speed_conditioning and target is not None:
+            value = float(target.reshape(-1)[row])
+            if np.isfinite(value):
+                speed = value
         return spring_follow(
-            vertices, ends_at_goal, initial_velocity(batch)[row].cpu().numpy(),
-            self.stats.gait_speed[int(batch["gait"][row])],
+            vertices, ends_at_goal, initial_velocity(batch)[row].cpu().numpy(), speed,
             steps=self.model.horizon_steps,
         )
 
@@ -122,6 +158,9 @@ class RootMotionPlanner:
         half_width: float | None = None, candidates: int | None = None,
     ) -> dict[str, torch.Tensor]:
         batch = {key: value.to(self.device) for key, value in batch.items()}
+        speed_clipped = None
+        if self.model.speed_conditioning and "target_speed" in batch:
+            batch, speed_clipped = self.clip_target_speed(batch)
         normalised = self.model.sample(
             batch, steps=self.config.flow_steps,
             samples=self.config.candidates if candidates is None else candidates,
@@ -139,7 +178,7 @@ class RootMotionPlanner:
         else:
             choice = (~invalid).float().argmax(dim=1)
             if self.config.selection == "goal_aware":
-                near, goal = goal_within_reach(batch, self.stats.gait_speed, candidates.shape[-2])
+                near, goal = goal_within_reach(batch, self.reference_speed(batch), candidates.shape[-2])
                 endpoint = trajectory_positions(candidates)[..., -1, :]
                 miss = torch.linalg.vector_norm(endpoint - goal[:, None, :], dim=-1)
                 final_speed = torch.linalg.vector_norm(
@@ -160,7 +199,11 @@ class RootMotionPlanner:
             else:
                 deltas[row] = fallback
                 source[row] = SOURCE_SPRING
-        return {
+        result = {
             "deltas": deltas, "source": source, "candidates": candidates,
             "candidate_invalid": invalid,
         }
+        if speed_clipped is not None:
+            result["target_speed"] = batch["target_speed"]  # as used, after clamping; NaN = unspecified
+            result["target_speed_clipped"] = speed_clipped
+        return result

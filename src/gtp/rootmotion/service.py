@@ -61,8 +61,24 @@ class PlanService:
         plan["source"] = SOURCE_NAMES[source]
         plan["rejected_candidates"] = rejected
         plan["candidates"] = int(result["candidate_invalid"].shape[1])
+        plan["target_speed"] = self.describe_target_speed(frame["target_speed"], result)
         plan["latency_ms"] = (time.perf_counter() - started) * 1_000.0
         return plan
+
+    def describe_target_speed(self, requested: float | None, result: Mapping[str, Any]) -> dict[str, Any]:
+        """What happened to the request's target_speed: used as given, clamped, unspecified or ignored."""
+        if not self.planner.model.speed_conditioning:
+            return {"requested": requested, "used": None, "clipped": False,
+                    "note": "this checkpoint is not speed-conditioned; target_speed is ignored"}
+        if requested is None:
+            return {"requested": None, "used": None, "clipped": False,
+                    "note": "unspecified: the model chooses the speed"}
+        used = float(result["target_speed"][0])
+        clipped = bool(result["target_speed_clipped"][0])
+        description = {"requested": requested, "used": used, "clipped": clipped}
+        if clipped:
+            description["note"] = "clamped into the range of the training labels for this gait"
+        return description
 
 
 def make_handler(service: PlanService) -> type[BaseHTTPRequestHandler]:

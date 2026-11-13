@@ -39,6 +39,9 @@ class WindowConfig:
     stop_steps: int = 10  # a stop is one second below stop_speed
     epsilon_range: tuple[float, float] = (0.1, 0.4)
     idle_keep_probability: float = 0.15
+    # target_speed label: this percentile of the moving step speeds (> stop_speed)
+    # from now to where the path ends; 0 for a window that does not move.
+    target_speed_percentile: float = 90.0
     seed: int = 0
 
 
@@ -49,6 +52,7 @@ class WindowSet:
     path_valid: list = field(default_factory=list)
     gait: list = field(default_factory=list)
     target: list = field(default_factory=list)
+    target_speed: list = field(default_factory=list)
     dropped: dict = field(default_factory=dict)
 
     def drop(self, reason: str) -> None:
@@ -145,6 +149,12 @@ def build_path(
     return trace[kept], ends_at_goal, cut
 
 
+def target_speed_label(step_speed: np.ndarray, moving_threshold: float, percentile: float) -> float:
+    """Percentile of the moving step speeds, or 0 when nothing moves."""
+    moving = step_speed[step_speed > moving_threshold]
+    return float(np.percentile(moving, percentile)) if len(moving) else 0.0
+
+
 def windows_from_track(
     track: np.ndarray, gait: int, config: WindowConfig, rng: np.random.Generator,
     out: WindowSet, epsilon: float | None = None,
@@ -188,6 +198,11 @@ def windows_from_track(
         deltas = np.diff(future, axis=0)
         turn = wrap(np.diff(yaw[now : now + horizon + 1]))
         out.target.append(np.concatenate([deltas, turn[:, None]], axis=1).astype(np.float32))
+        # Steps now .. now + covered are the capture the path describes.
+        out.target_speed.append(
+            0.0 if len(vertices) == 0 else
+            target_speed_label(speed[now : now + covered], config.stop_speed, config.target_speed_percentile)
+        )
 
 
 class RootMotionWindows(Dataset):
@@ -215,6 +230,7 @@ class RootMotionWindows(Dataset):
         self.path_valid = torch.from_numpy(np.stack(collected.path_valid))
         self.gait = torch.tensor(collected.gait, dtype=torch.long)
         self.target = torch.from_numpy(np.stack(collected.target))
+        self.target_speed = torch.tensor(collected.target_speed, dtype=torch.float32)
         self.dropped = collected.dropped
 
     def __len__(self) -> int:
@@ -227,12 +243,13 @@ class RootMotionWindows(Dataset):
             "path_valid": self.path_valid[index],
             "gait": self.gait[index],
             "target": self.target[index],
+            "target_speed": self.target_speed[index],
         }
 
     def as_batch(self) -> dict[str, torch.Tensor]:
         return {
             "history": self.history, "path": self.path, "path_valid": self.path_valid,
-            "gait": self.gait, "target": self.target,
+            "gait": self.gait, "target": self.target, "target_speed": self.target_speed,
         }
 
 

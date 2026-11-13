@@ -84,14 +84,28 @@ def build_batch(request: Mapping[str, Any]) -> tuple[dict[str, torch.Tensor], di
     vertices, ends_at_goal = clip_path(local, bool(request.get("path_ends_at_goal", True)))
     tokens, valid = path_tokens(vertices, ends_at_goal, MAX_PATH_VERTICES)
 
+    # Optional target speed (m/s). Absent means unspecified (NaN); a speed-conditioned
+    # model then uses its learned "unspecified" input, other models ignore it.
+    target_speed = request.get("target_speed")
+    if target_speed is not None:
+        try:
+            target_speed = float(target_speed)
+        except (TypeError, ValueError) as error:
+            raise RequestError("target_speed must be a number in m/s") from error
+        if not math.isfinite(target_speed) or target_speed < 0.0:
+            raise RequestError("target_speed must be a finite, non-negative speed in m/s")
+
     past = to_local(world[:, [0, 2]], origin, yaw)
     batch = {
         "history": torch.from_numpy(history_features(past, wrap(world[:, 3] - yaw)))[None],
         "path": torch.from_numpy(tokens)[None],
         "path_valid": torch.from_numpy(valid)[None],
         "gait": torch.tensor([GAITS.index(gait)], dtype=torch.long),
+        "target_speed": torch.tensor([float("nan") if target_speed is None else target_speed],
+                                     dtype=torch.float32),
     }
-    frame = {"origin": (float(origin[0]), height, float(origin[1])), "yaw": yaw, "gait": gait}
+    frame = {"origin": (float(origin[0]), height, float(origin[1])), "yaw": yaw, "gait": gait,
+             "target_speed": target_speed}
     return batch, frame
 
 

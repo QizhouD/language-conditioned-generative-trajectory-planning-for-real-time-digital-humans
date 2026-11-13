@@ -1,0 +1,34 @@
+# CPU-sized regressor conditioned on a target speed (about a minute on a GPU).
+# Same as rootmotion_regressor_cpu.yaml plus model.speed_conditioning; training drops the
+# target speed 10% of the time so the model also works without one.
+experiment: rootmotion_regressor_speed_cpu
+seed: 7
+data_path: data/lafan1_root.npz
+run_dir: runs/rootmotion_regressor_speed_cpu
+
+data:
+  train_subjects: [1, 2, 3]
+  val_subjects: [4]
+  test_subjects: [5]
+  train_stride: 1
+  eval_stride: 5
+  eval_epsilon: 0.25
+
+model:
+  hidden_dim: 96
+  encoder_layers: 1
+  decoder_layers: 3
+  heads: 4
+  dropout: 0.0
+  deterministic: true
+  speed_conditioning: true
+
+training:
+  epochs: 24
+  batch_size: 128
+  learning_rate: 0.0005
+  weight_decay: 0.01
+  warmup_steps: 200
+  ema_decay: 0.998
+  validate_every: 4
+  speed_dropout: 0.1

@@ -54,6 +54,7 @@ ARRIVAL_PROGRESS_SLACK = 1.0  # metres short of the route length
 SETTLE_SPEED = 0.1  # m/s
 SETTLE_STEPS = CONTROL_HZ  # one second below SETTLE_SPEED counts as settled
 BACKWARD_TOLERANCE = 0.01  # metres of lost progress along the route
+CRUISE_MOVING_SPEED = 0.2  # m/s; WindowConfig.stop_speed, the target_speed label's threshold
 
 
 # --------------------------------------------------------------------------- routes
@@ -123,7 +124,7 @@ def model_plan_function(planner: RootMotionPlanner, generator: torch.Generator |
     """The service's code path: build_batch -> plan_batch, plus selection diagnostics."""
 
     def plan(request: dict) -> tuple[np.ndarray, int, dict]:
-        batch, _ = build_batch(request)
+        batch, _ = build_batch(request)  # carries request["target_speed"] if any
         result = planner.plan_batch(batch, generator)
         candidates = result["candidates"][0]  # [K, T, 3]
         invalid = result["candidate_invalid"][0]
@@ -334,6 +335,15 @@ def rollout_metrics(rollout: Rollout) -> dict:
     stop_error = float(distance[settle_from]) if settled else None
     residual = float(speed[settle_from:settle_from + SETTLE_STEPS].mean()) if settled else None
 
+    # Cruise speed with the target_speed label's own definition: the 90th percentile of the
+    # moving step speeds (> 0.2 m/s) before arrival, so it compares directly with the ask.
+    before = speed[:until]
+    cruising = before[before > CRUISE_MOVING_SPEED]
+    cruise_p90 = float(np.percentile(cruising, 90)) if len(cruising) else 0.0
+    first_second = float(speed[:CONTROL_HZ].mean())
+    speed_at_lock = (float(speed[rollout.locked_at - 1])
+                     if rollout.locked_at is not None and rollout.locked_at > 0 else None)
+
     # A planner that never settles (a flow model fidgeting at the goal) still has an
     # end-of-run error: the mean distance and speed over the final second.
     final_distance = float(distance[-SETTLE_STEPS:].mean())
@@ -366,6 +376,9 @@ def rollout_metrics(rollout: Rollout) -> dict:
         "locked": rollout.locked_at is not None,
         "time_limit": rollout.time_limit,
         "moving_mean_speed": float(speed[moving].mean()) if moving.any() else 0.0,
+        "cruise_p90": cruise_p90,
+        "first_second_speed": first_second,
+        "speed_at_lock": speed_at_lock,
         "follow_mean_speed": follow_mean,
         "start_delay": first_move / CONTROL_HZ if first_move is not None else None,
         "arrival_time": arrival_time,

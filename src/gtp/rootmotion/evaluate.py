@@ -98,7 +98,13 @@ def score(
     return result
 
 
-def run_baseline(kind: str, batch: dict[str, torch.Tensor], gait_speed: tuple[float, ...]) -> torch.Tensor:
+def run_baseline(kind: str, batch: dict[str, torch.Tensor], gait_speed: tuple[float, ...],
+                 per_window_speed: bool = False) -> torch.Tensor:
+    """Spring or constant-speed follower on every window.
+
+    ``per_window_speed`` gives each window its own target_speed label, the information a
+    speed-conditioned model receives; otherwise the gait's median moving speed is used.
+    """
     polyline, valid = path_polyline(batch)
     velocity = initial_velocity(batch).numpy()
     count = batch["path_valid"].sum(dim=1)
@@ -106,7 +112,8 @@ def run_baseline(kind: str, batch: dict[str, torch.Tensor], gait_speed: tuple[fl
     for row in range(len(count)):
         vertices = polyline[row][valid[row]].numpy()
         ends = int(count[row]) == 0 or bool(batch["path"][row, int(count[row]) - 1, 3] > 0.5)
-        speed = gait_speed[int(batch["gait"][row])]
+        speed = (float(batch["target_speed"][row]) if per_window_speed
+                 else gait_speed[int(batch["gait"][row])])
         if kind == "spring":
             rows.append(spring_follow(vertices, ends, velocity[row], speed))
         else:
@@ -201,6 +208,9 @@ def main() -> None:
     parser.add_argument("--selection", choices=SELECTION_RULES, default="goal_aware",
                         help="candidate selection; the regressor has one candidate, so only flow changes")
     parser.add_argument("--latency-repetitions", type=int, default=50)
+    parser.add_argument("--no-target-speed", action="store_true",
+                        help="hide the target speed from the models (a speed-conditioned model then "
+                             "uses its 'unspecified' input); baselines are unaffected")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -214,6 +224,13 @@ def main() -> None:
     rows = [score("capture (reference)", batch["target"], batch, args.half_width)]
     rows.append(score("constant speed on polyline", run_baseline("constant", batch, gait_speed), batch, args.half_width))
     rows.append(score("spring follower", run_baseline("spring", batch, gait_speed), batch, args.half_width))
+    # The same followers told each window's target speed, as a speed-conditioned model is.
+    rows.append(score("constant speed, target speed",
+                      run_baseline("constant", batch, gait_speed, per_window_speed=True), batch, args.half_width))
+    rows.append(score("spring follower, target speed",
+                      run_baseline("spring", batch, gait_speed, per_window_speed=True), batch, args.half_width))
+    if args.no_target_speed:
+        batch = {**batch, "target_speed": torch.full_like(batch["target_speed"], float("nan"))}
     if args.regressor:
         planner_config = PlannerConfig(candidates=1, half_width=args.half_width,
                                        selection=args.selection)
@@ -230,6 +247,7 @@ def main() -> None:
         "split": args.split, "windows": len(data), "clips": data.clips,
         "gait_counts": {gait: int((batch["gait"] == index).sum()) for index, gait in enumerate(GAITS)},
         "half_width": args.half_width, "seed": args.seed, "selection": args.selection,
+        "target_speed_given": not args.no_target_speed,
         "hardware": f"{platform.processor() or platform.machine()}, {torch.get_num_threads()} threads",
         "results": rows,
     }

@@ -38,6 +38,17 @@ def load_splits(config: dict) -> dict[str, RootMotionWindows]:
     }
 
 
+SPEED_DROPOUT = 0.1
+
+
+def drop_target_speed(batch: dict[str, torch.Tensor], probability: float,
+                      generator: torch.Generator | None = None) -> dict[str, torch.Tensor]:
+    """Replace each row's target speed by NaN ("unspecified") with the given probability."""
+    speed = batch["target_speed"]
+    drop = torch.rand(speed.shape, generator=generator, device=speed.device) < probability
+    return {**batch, "target_speed": torch.where(drop, torch.full_like(speed, float("nan")), speed)}
+
+
 def position_loss_weight(config: dict) -> float:
     """training.position_loss_weight; 0 (the default) leaves training exactly as before."""
     return float(config.get("training", {}).get("position_loss_weight", 0.0))
@@ -151,6 +162,9 @@ def main() -> None:
     weight = position_loss_weight(config)
     if weight > 0:
         print(f"position_loss_weight={weight}", flush=True)
+    speed_dropout = float(training.get("speed_dropout", SPEED_DROPOUT))
+    if model.speed_conditioning:
+        print(f"speed_conditioning: dropout={speed_dropout} range={stats.speed_range}", flush=True)
     run_dir = Path(config["run_dir"])
     run_dir.mkdir(parents=True, exist_ok=True)
     tensors = {key: value.to(device) for key, value in train.as_batch().items()}
@@ -162,6 +176,9 @@ def main() -> None:
             index = order[start : start + batch_size]
             batch = {key: value[index] for key, value in tensors.items()}
             batch = mirror(batch, torch.rand(len(index), device=device) < 0.5)
+            if model.speed_conditioning:
+                # Only conditioned models draw this, so other configs train exactly as before.
+                batch = drop_target_speed(batch, speed_dropout)
             optimizer.zero_grad(set_to_none=True)
             loss = batch_loss(model, batch, stats, position_weight=weight)
             loss.backward()
