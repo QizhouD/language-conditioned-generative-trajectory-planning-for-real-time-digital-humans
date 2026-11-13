@@ -69,6 +69,27 @@ def test_latency_keeps_playing_the_old_plan_and_starts_the_new_one_late():
     assert rollout.poses[3, :2] == pytest.approx([0.0, 0.3], abs=1e-6)
 
 
+def test_lock_on_arrival_stops_at_the_tolerance_like_the_engine():
+    planner = Forward()
+    rollout = simulate(STRAIGHT, planner, replan_interval=1.0, time_limit=6.0, lock_on_arrival=True)
+    # 0.1 m per step: the first pose within 0.25 m of the goal is 2.8 m along; it stays there.
+    assert rollout.locked_at == 28
+    assert np.allclose(rollout.poses[28:, :2], [0.0, 2.8])
+    assert len(planner.calls) == 3  # no replanning after the lock
+    metrics = rollout_metrics(rollout)
+    assert metrics["locked"] and metrics["settled"]
+    assert metrics["final_distance"] == pytest.approx(0.2, abs=1e-6) and metrics["final_speed"] == 0.0
+    unlocked = rollout_metrics(simulate(STRAIGHT, Forward(), replan_interval=1.0, time_limit=6.0))
+    assert not unlocked["locked"] and unlocked["final_distance"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_request_extras_reach_the_planner():
+    planner = Forward()
+    simulate(STRAIGHT, planner, replan_interval=1.0, time_limit=1.0, settle_early_stop=False,
+             request_extras={"target_speed": 0.6})
+    assert planner.calls[0]["target_speed"] == 0.6
+
+
 def test_a_hold_answer_stands_still_and_counts_as_hold():
     rollout = simulate(STRAIGHT, Forward(SOURCE_HOLD), replan_interval=1.0, time_limit=3.0,
                        settle_early_stop=False)

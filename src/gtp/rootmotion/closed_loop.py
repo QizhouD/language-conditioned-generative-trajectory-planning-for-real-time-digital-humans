@@ -149,7 +149,9 @@ def baseline_plan_function(kind: str, gait_speed: Sequence[float]) -> PlanFuncti
         count = int(batch["path_valid"][0].sum())
         ends = count == 0 or bool(batch["path"][0, count - 1, 3] > 0.5)
         velocity = initial_velocity(batch)[0].numpy().astype(np.float64)
-        speed = gait_speed[int(batch["gait"][0])]
+        # Told the target speed when the request carries one, like the model; else the gait median.
+        given = request.get("target_speed")
+        speed = float(given) if given is not None else gait_speed[int(batch["gait"][0])]
         if kind == "spring":
             deltas = spring_follow(vertices, ends, velocity, speed)
         elif kind == "constant":
@@ -172,6 +174,7 @@ class Rollout:
     sources: list[int]
     details: list[dict]
     time_limit: float
+    locked_at: int | None = None  # pose index at which lock_on_arrival stopped the character
 
 
 def _request(history: list[tuple[float, float, float]], path: np.ndarray, gait: str) -> dict:
@@ -195,8 +198,17 @@ def remaining_path(route: np.ndarray, cumulative: np.ndarray, position: np.ndarr
 def simulate(
     route: Route, plan: PlanFunction, *, replan_interval: float = 1.0, latency_steps: int = 0,
     time_limit: float | None = None, gait_speed: float | None = None, settle_early_stop: bool = True,
+    lock_on_arrival: bool = False, request_extras: dict | None = None,
 ) -> Rollout:
-    """Roll a planner out along ``route`` from rest. See the module docstring."""
+    """Roll a planner out along ``route`` from rest. See the module docstring.
+
+    ``lock_on_arrival`` does what the Unity TrajectoryPlanFollower does: once the root
+    is within the arrival tolerance (0.25 m, plus a stop distance of 0 here) it stops
+    following, drops the plan in flight and stands still. The engine checks only the
+    distance; here route progress must also be near the end, so a fold-back whose goal
+    is its start is not locked at t = 0. After locking the pose is held for 2 s and the
+    run ends. ``request_extras`` is merged into every request (e.g. target_speed).
+    """
     every = max(1, round(replan_interval * CONTROL_HZ))
     if time_limit is None:
         if gait_speed is None:
@@ -224,6 +236,8 @@ def simulate(
         if step % every == 0:
             path = remaining_path(points, cumulative, position, progress)
             request = _request(history, path, route.gait)
+            if request_extras:
+                request.update(request_extras)
             deltas, source, detail = plan(request)
             _, frame = build_batch(request)
             world = build_plan(np.asarray(deltas).tolist(), frame, fallback=source == SOURCE_HOLD)
@@ -253,6 +267,13 @@ def simulate(
         still = still + 1 if moved < SETTLE_SPEED else 0
         arrived = (math.hypot(pose[0] - goal[0], pose[1] - goal[1]) <= ARRIVAL_RADIUS
                    and progress >= route.length - ARRIVAL_PROGRESS_SLACK)
+        if lock_on_arrival and arrived:
+            locked_at = len(poses) - 1
+            for _ in range(2 * SETTLE_STEPS):
+                poses.append(pose)
+                seams.append(False)
+            return Rollout(route, np.asarray(poses), np.asarray(seams), sources, details, time_limit,
+                           locked_at)
         if settle_early_stop and arrived and still >= 2 * SETTLE_STEPS:
             break
 
@@ -342,6 +363,7 @@ def rollout_metrics(rollout: Rollout) -> dict:
     return {
         "route": route.name,
         "length": route.length,
+        "locked": rollout.locked_at is not None,
         "time_limit": rollout.time_limit,
         "moving_mean_speed": float(speed[moving].mean()) if moving.any() else 0.0,
         "follow_mean_speed": follow_mean,
@@ -422,18 +444,28 @@ def route_seed(route: Route) -> int:
 def run_method(
     method: str, routes: Sequence[Route], stats: RootMotionStats, *,
     planner: RootMotionPlanner | None = None, replan_interval: float = 1.0, latency_steps: int = 0,
-    reference: dict | None = None,
+    reference: dict | None = None, lock_on_arrival: bool = False,
+    target_speed: dict[str, float] | None = None,
 ) -> dict:
-    """All routes for one method (one checkpoint for a model). Returns per-route rows and W1."""
+    """All routes for one method (one checkpoint for a model). Returns per-route rows and W1.
+
+    ``target_speed`` maps a gait to the speed every request of that gait asks for; the
+    time limit then uses that speed instead of the gait median.
+    """
     rows, pooled = [], {}
     for route in routes:
         gait_speed = stats.gait_speed[GAITS.index(route.gait)]
+        extras = None
+        if target_speed and route.gait in target_speed:
+            extras = {"target_speed": float(target_speed[route.gait])}
+            gait_speed = float(target_speed[route.gait])
         if planner is None:
             plan = baseline_plan_function(method, stats.gait_speed)
         else:
             plan = model_plan_function(planner, torch.Generator().manual_seed(route_seed(route)))
         rollout = simulate(route, plan, replan_interval=replan_interval,
-                           latency_steps=latency_steps, gait_speed=gait_speed)
+                           latency_steps=latency_steps, gait_speed=gait_speed,
+                           lock_on_arrival=lock_on_arrival, request_extras=extras)
         metrics = rollout_metrics(rollout)
         rows.append(metrics)
         kin = active_kinematics(rollout, metrics["active_steps"])
@@ -541,15 +573,27 @@ def main() -> None:
     parser.add_argument("--candidates", type=int, default=16)
     parser.add_argument("--half-width", type=float, default=0.5)
     parser.add_argument("--baselines", nargs="*", default=["spring", "constant"])
+    parser.add_argument("--lock-on-arrival", action="store_true",
+                        help="stop at the arrival tolerance like the Unity follower")
+    parser.add_argument("--target-speed", default="",
+                        help="e.g. walk=0.9,run=2.0: ask every request of that gait for this speed; "
+                             "only the listed gaits' routes are run")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     reference = reference_kinematics(config)
+    target_speed = {k: float(v) for k, v in (item.split("=") for item in args.target_speed.split(",") if item)}
     routes = standard_routes() + [unity_route()]
+    if target_speed:
+        routes = [r for r in routes if r.gait in target_speed]
     checkpoints = {"flow": args.flow, "regressor": args.regressor}
     report: dict = {"replan_interval": args.replan_interval, "latency_steps": args.latency_steps,
-                    "selection": args.selection, "methods": {}}
+                    "selection": args.selection, "lock_on_arrival": args.lock_on_arrival,
+                    "target_speed": target_speed, "methods": {}}
+    options = {"replan_interval": args.replan_interval, "latency_steps": args.latency_steps,
+               "reference": reference, "lock_on_arrival": args.lock_on_arrival,
+               "target_speed": target_speed or None}
     stats = None
     for method, paths in checkpoints.items():
         per_seed = []
@@ -559,17 +603,14 @@ def main() -> None:
                 path, PlannerConfig(candidates=candidates, half_width=args.half_width,
                                     selection=args.selection))
             stats = planner.stats
-            per_seed.append(run_method(method, routes, planner.stats, planner=planner,
-                                       replan_interval=args.replan_interval,
-                                       latency_steps=args.latency_steps, reference=reference))
+            per_seed.append(run_method(method, routes, planner.stats, planner=planner, **options))
             print(f"{method} {path}: done", flush=True)
         if per_seed:
             report["methods"][method] = {"per_seed": per_seed, "summary": aggregate(per_seed)}
     if stats is None:
         raise SystemExit("give at least one checkpoint (the baselines use its gait speeds)")
     for method in args.baselines:
-        result = run_method(method, routes, stats, replan_interval=args.replan_interval,
-                            latency_steps=args.latency_steps, reference=reference)
+        result = run_method(method, routes, stats, **options)
         report["methods"][method] = {"per_seed": [result], "summary": aggregate([result])}
         print(f"{method}: done", flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
