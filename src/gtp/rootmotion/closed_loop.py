@@ -536,7 +536,7 @@ def main() -> None:
     parser.add_argument("--replan-interval", type=float, default=1.0,
                         help="seconds; the LLM-NPC scene's TrajectoryPlanFollower uses 1 s")
     parser.add_argument("--latency-steps", type=int, default=0)
-    parser.add_argument("--selection", default="first_valid",
+    parser.add_argument("--selection", default="goal_aware",
                         help="first_valid, closest or goal_aware; the regressor has one candidate")
     parser.add_argument("--candidates", type=int, default=16)
     parser.add_argument("--half-width", type=float, default=0.5)

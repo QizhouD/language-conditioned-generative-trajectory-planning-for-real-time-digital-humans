@@ -120,13 +120,17 @@ python -m gtp.rootmotion.evaluate --config configs/rootmotion_flow_cpu.yaml `
 | Constant speed on the polyline | 0.563 | 0.903 | – | 0.400 | 1.006 | 0.550 | 0.126 | – | – |
 | Spring follower | 0.577 | 1.016 | – | 0.304 | 0.774 | **0.198** | **0.111** | – | – |
 | Regressor + filter | **0.400 ± 0.006** | **0.737 ± 0.015** | 0.390 ± 0.006 | 0.221 ± 0.015 | 0.628 ± 0.017 | 0.565 ± 0.013 | 0.316 ± 0.020 | 9.5% ± 0.7 | 2 |
-| Flow, K = 16 + filter | 0.442 ± 0.005 | 0.861 ± 0.007 | **0.227 ± 0.004** | **0.197 ± 0.006** | **0.322 ± 0.006** | 0.286 ± 0.010 | 0.366 ± 0.009 | **0.4% ± 0.1** | 23 |
+| Flow, K = 16 + filter (goal-aware) | 0.439 ± 0.006 | 0.856 ± 0.008 | **0.227 ± 0.004** | **0.197 ± 0.006** | **0.322 ± 0.006** | 0.288 ± 0.009 | 0.226 ± 0.007 | **0.4% ± 0.1** | 23 |
 
 ADE compares positions at matching timestamps over 3 s, so it scores the speed
 profile as well as the shape. W1 is the Wasserstein-1 distance between pooled
 per-step distributions and the capture (m/s, m/s², rad/s). Stop error is the
 distance from the final position to the goal on windows where the capture comes to
 rest; the capture itself scores 0.104. Latency is one request on the CPU.
+
+The flow row uses goal-aware selection, the default since the ablation below; with
+the previous first-valid rule its stop error is 0.366 ± 0.009 and ADE 0.442. The
+regressor draws one candidate, so the rule does not affect it.
 
 What this shows:
 
@@ -153,9 +157,12 @@ Mean over the 12 walk routes, then over the five seeds:
 | Method | Mean speed while following | Final distance to goal m | Final speed m/s | W1 speed | W1 accel | W1 turn |
 |---|---|---|---|---|---|---|
 | Regressor | 0.561 ± 0.039 | 0.140 ± 0.025 | 0.031 | 0.525 | 0.808 | 1.057 |
-| Flow | 0.555 ± 0.054 | 0.157 ± 0.007 | 0.137 | 0.535 | **0.592** | **0.818** |
+| Flow (goal-aware) | 0.596 ± 0.046 | 0.108 ± 0.014 | 0.122 | 0.501 | **0.578** | **0.811** |
 | Spring | 0.821 | **0.015** | 0.009 | **0.345** | 0.783 | 0.992 |
 | Constant speed | 0.880 | 0.000 | 0.000 | 0.389 | 0.895 | 0.995 |
+
+The diagnosis below was run with first-valid selection (flow 0.555 m/s, final
+distance 0.157 m on these routes); goal-aware selection does not change it.
 
 On the Unity demo route the flow model averages 0.49 m/s against 0.85 for the spring,
 the same gap the engine showed (0.57 against 0.86), so the slowness is in the
@@ -194,7 +201,7 @@ the advantages on acceleration and turn-rate distributions do.
 
 | Flow, mean ± std over 5 seeds | Open stop error | ADE | minADE | W1 speed | W1 accel | W1 turn | Fallback | Closed final distance (walk / run) |
 |---|---|---|---|---|---|---|---|---|
-| Baseline | 0.366 ± 0.009 | 0.442 | 0.227 | 0.197 | 0.322 | 0.286 | 0.4% | 0.152 / 0.233 |
+| First-valid (previous default) | 0.366 ± 0.009 | 0.442 | 0.227 | 0.197 | 0.322 | 0.286 | 0.4% | 0.152 / 0.233 |
 | A | **0.226 ± 0.007** | 0.439 | 0.227 | 0.197 | 0.322 | 0.288 | 0.4% | **0.108** / **0.138** |
 | B, weight 0.5 | 0.365 ± 0.012 | 0.440 | 0.227 | 0.198 | 0.318 | 0.286 | 0.4% | 0.143 / 0.217 |
 | B, weight 2 | 0.361 ± 0.007 | 0.440 | 0.226 | 0.198 | 0.321 | 0.287 | 0.2% | 0.150 / 0.215 |
@@ -207,7 +214,8 @@ does not apply to it. B makes no measurable difference at these weights for eith
 model (regressor open stop error 0.316 → 0.325 / 0.319): the position term is about
 1% of the flow loss and 3 to 5% of the regressor's, so much larger weights would be
 needed. Even with A, the flow model's stop error (0.226 m) remains twice the
-spring's (0.111) and the capture's (0.104). Neither fix is the default.
+spring's (0.111) and the capture's (0.104). A is now the default selection rule of
+the planner and the service; the position loss stays off.
 
 ![Held-out windows](rootmotion-figures/test-windows-cpu.png)
 

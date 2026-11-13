@@ -32,10 +32,11 @@ class PlannerConfig:
     subsamples: int = 4
     # "first_valid" is rejection sampling: it keeps the model's distribution,
     # truncated by the constraints. "closest" prefers hugging the path.
-    # "goal_aware" is first_valid, except when the goal is within reach of this
-    # plan: then it takes the valid candidate that ends nearest the goal and
-    # slowest (see goal_within_reach and GOAL_AWARE_SPEED_WEIGHT).
-    selection: str = "first_valid"
+    # "goal_aware" (the default) is first_valid, except when the goal is within
+    # reach of this plan: then it takes the valid candidate that ends nearest the
+    # goal and slowest (see goal_within_reach and GOAL_AWARE_SPEED_WEIGHT). With a
+    # single candidate (the regressor) every rule picks the same plan.
+    selection: str = "goal_aware"
     limits: KinematicLimits = field(default_factory=KinematicLimits)
 
 

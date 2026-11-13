@@ -159,7 +159,7 @@ def test_planner_uses_the_first_valid_candidate():
 
     torch.manual_seed(0)
     model = Scripted(hidden_dim=32, encoder_layers=1, decoder_layers=1, heads=2)
-    planner = RootMotionPlanner(model, STATS, PlannerConfig(candidates=3))
+    planner = RootMotionPlanner(model, STATS, PlannerConfig(candidates=3, selection="first_valid"))
     result = planner.plan_batch(make_batch([[0.0, 6.0]], velocity=(0.0, 1.2)))
     assert result["candidate_invalid"][0].tolist() == [True, False, False]
     assert int(result["source"][0]) == SOURCE_MODEL
@@ -222,6 +222,13 @@ def test_goal_aware_prefers_the_slower_finish_at_equal_distance():
     result = planner.plan_batch(make_batch([[0.0, 2.0]]))
     assert GOAL_AWARE_SPEED_WEIGHT > 0
     assert torch.allclose(result["deltas"][0], walk_then_stop(20), atol=1e-6)
+
+
+def test_goal_aware_is_the_default_selection():
+    assert PlannerConfig().selection == "goal_aware"
+    near = make_batch([[0.0, 2.0]])
+    default = RootMotionPlanner(scripted_planner("goal_aware").model, STATS, PlannerConfig(candidates=3))
+    assert torch.allclose(default.plan_batch(near)["deltas"][0], walk_then_stop(20), atol=1e-6)
 
 
 def test_unknown_selection_rule_is_rejected():

@@ -198,7 +198,7 @@ def main() -> None:
     parser.add_argument("--flow-steps", type=int, default=8)
     parser.add_argument("--half-width", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--selection", choices=SELECTION_RULES, default="first_valid",
+    parser.add_argument("--selection", choices=SELECTION_RULES, default="goal_aware",
                         help="candidate selection; the regressor has one candidate, so only flow changes")
     parser.add_argument("--latency-repetitions", type=int, default=50)
     parser.add_argument("--output", type=Path)
