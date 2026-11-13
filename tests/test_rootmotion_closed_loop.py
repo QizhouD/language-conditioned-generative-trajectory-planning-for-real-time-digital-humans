@@ -96,6 +96,14 @@ def test_spring_baseline_closes_the_loop_through_the_service_path():
     assert metrics["backward_steps"] == 0
 
 
+def test_a_fold_back_is_not_arrived_at_its_start():
+    route = Route("uturn", ((0.0, 0.0), (0.0, 4.0), (0.0, 0.0)), 0.0, "walk")
+    metrics = rollout_metrics(simulate(route, baseline_plan_function("spring", STATS.gait_speed), gait_speed=1.0))
+    # The goal is the start: arrival only counts once the route has been walked.
+    assert metrics["arrival_time"] is not None and metrics["arrival_time"] > 6.0
+    assert metrics["follow_mean_speed"] > 0.5
+
+
 def test_model_plan_function_reports_selection_details():
     torch.manual_seed(0)
     model = RootMotionModel(hidden_dim=32, encoder_layers=1, decoder_layers=1, heads=2).eval()

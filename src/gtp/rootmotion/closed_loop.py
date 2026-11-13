@@ -48,6 +48,9 @@ from gtp.rootmotion.stats import RootMotionStats
 from gtp.rootmotion.windows import path_polyline
 
 ARRIVAL_RADIUS = 0.25  # metres; the Unity follower's arrival tolerance
+# Arrival also needs this much of the route covered, so a fold-back whose goal is its
+# start does not count as arrived at t = 0.
+ARRIVAL_PROGRESS_SLACK = 1.0  # metres short of the route length
 SETTLE_SPEED = 0.1  # m/s
 SETTLE_STEPS = CONTROL_HZ  # one second below SETTLE_SPEED counts as settled
 BACKWARD_TOLERANCE = 0.01  # metres of lost progress along the route
@@ -248,7 +251,8 @@ def simulate(
 
         moved = math.hypot(pose[0] - poses[-2][0], pose[1] - poses[-2][1]) * CONTROL_HZ
         still = still + 1 if moved < SETTLE_SPEED else 0
-        arrived = math.hypot(pose[0] - goal[0], pose[1] - goal[1]) <= ARRIVAL_RADIUS
+        arrived = (math.hypot(pose[0] - goal[0], pose[1] - goal[1]) <= ARRIVAL_RADIUS
+                   and progress >= route.length - ARRIVAL_PROGRESS_SLACK)
         if settle_early_stop and arrived and still >= 2 * SETTLE_STEPS:
             break
 
@@ -286,8 +290,14 @@ def rollout_metrics(rollout: Rollout) -> dict:
     speed = np.linalg.norm(velocity, axis=1)
     distance = np.linalg.norm(positions - goal, axis=1)
 
-    inside = np.flatnonzero(distance[1:] <= ARRIVAL_RADIUS)
-    arrival_step = int(inside[0]) + 1 if len(inside) else None
+    monotonic, best = [], 0.0
+    for position in positions:
+        best = max(best, project(points, cumulative, position, best, window=3.0))
+        monotonic.append(best)
+    covered = np.asarray(monotonic) >= route.length - ARRIVAL_PROGRESS_SLACK
+    inside = np.flatnonzero((distance <= ARRIVAL_RADIUS) & covered)
+    inside = inside[inside > 0]
+    arrival_step = int(inside[0]) if len(inside) else None
     arrival_time = arrival_step / CONTROL_HZ if arrival_step is not None else None
 
     moving = speed > WALK_SPEED_THRESHOLD
