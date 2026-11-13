@@ -50,6 +50,7 @@ def test_rollout_replans_on_schedule_and_reaches_the_goal():
     metrics = rollout_metrics(rollout)
     assert metrics["arrival_time"] == pytest.approx(2.8)  # within 0.25 m of the goal
     assert metrics["settled"] and metrics["stop_error"] == pytest.approx(0.0, abs=1e-6)
+    assert metrics["final_distance"] == pytest.approx(0.0, abs=1e-6) and metrics["final_speed"] == 0.0
     assert metrics["moving_mean_speed"] == pytest.approx(1.0, abs=1e-6)
     assert metrics["backward_steps"] == 0 and metrics["max_deviation"] == pytest.approx(0.0, abs=1e-9)
     # Requests carry 20 poses of history, the current position first on the path, and the goal.

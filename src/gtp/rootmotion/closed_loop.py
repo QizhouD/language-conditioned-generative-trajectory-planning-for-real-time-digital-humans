@@ -303,11 +303,18 @@ def rollout_metrics(rollout: Rollout) -> dict:
     stop_error = float(distance[settle_from]) if settled else None
     residual = float(speed[settle_from:settle_from + SETTLE_STEPS].mean()) if settled else None
 
+    # A planner that never settles (a flow model fidgeting at the goal) still has an
+    # end-of-run error: the mean distance and speed over the final second.
+    final_distance = float(distance[-SETTLE_STEPS:].mean())
+    final_speed = float(speed[-SETTLE_STEPS:].mean())
+
     # Progress along the route: raw (may drop) and the monotonic version used for the path.
+    # Backward steps are counted before arrival only: shuffling on the goal is not "backward".
     raw, best, backward = [], 0.0, []
-    for position in positions:
+    last_counted = arrival_step if arrival_step is not None else len(positions)
+    for step, position in enumerate(positions):
         value = project(points, cumulative, position, max(0.0, best - 0.5), window=1.5)
-        if raw and value < raw[-1] - BACKWARD_TOLERANCE:
+        if raw and value < raw[-1] - BACKWARD_TOLERANCE and step <= last_counted:
             backward.append(raw[-1] - value)
         raw.append(value)
         best = max(best, value)
@@ -334,6 +341,8 @@ def rollout_metrics(rollout: Rollout) -> dict:
         "settled": bool(settled),
         "stop_error": stop_error,
         "residual_speed": residual,
+        "final_distance": final_distance,
+        "final_speed": final_speed,
         "max_deviation": float(_distance_to_route(positions, points).max()),
         "fallback_rate": float((sources == SOURCE_SPRING).mean()) if len(sources) else 0.0,
         "hold_rate": float((sources == SOURCE_HOLD).mean()) if len(sources) else 0.0,
@@ -517,7 +526,8 @@ def main() -> None:
     parser.add_argument("--replan-interval", type=float, default=1.0,
                         help="seconds; the LLM-NPC scene's TrajectoryPlanFollower uses 1 s")
     parser.add_argument("--latency-steps", type=int, default=0)
-    parser.add_argument("--selection", default="first_valid")
+    parser.add_argument("--selection", default="first_valid",
+                        help="first_valid, closest or goal_aware; the regressor has one candidate")
     parser.add_argument("--candidates", type=int, default=16)
     parser.add_argument("--half-width", type=float, default=0.5)
     parser.add_argument("--baselines", nargs="*", default=["spring", "constant"])
