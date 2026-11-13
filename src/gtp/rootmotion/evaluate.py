@@ -22,7 +22,8 @@ from gtp.rootmotion import CONTROL_HZ, GAITS
 from gtp.rootmotion.baselines import constant_speed_follow, spring_follow
 from gtp.rootmotion.constraints import corridor_deviation, kinematic_violation
 from gtp.rootmotion.planner import (
-    SOURCE_HOLD, SOURCE_MODEL, PlannerConfig, RootMotionPlanner, initial_velocity, load_checkpoint,
+    SELECTION_RULES, SOURCE_HOLD, SOURCE_MODEL, PlannerConfig, RootMotionPlanner, initial_velocity,
+    load_checkpoint,
 )
 from gtp.rootmotion.stats import RootMotionStats
 from gtp.rootmotion.train import load_splits
@@ -197,6 +198,8 @@ def main() -> None:
     parser.add_argument("--flow-steps", type=int, default=8)
     parser.add_argument("--half-width", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--selection", choices=SELECTION_RULES, default="first_valid",
+                        help="candidate selection; the regressor has one candidate, so only flow changes")
     parser.add_argument("--latency-repetitions", type=int, default=50)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -212,19 +215,21 @@ def main() -> None:
     rows.append(score("constant speed on polyline", run_baseline("constant", batch, gait_speed), batch, args.half_width))
     rows.append(score("spring follower", run_baseline("spring", batch, gait_speed), batch, args.half_width))
     if args.regressor:
-        planner_config = PlannerConfig(candidates=1, half_width=args.half_width)
+        planner_config = PlannerConfig(candidates=1, half_width=args.half_width,
+                                       selection=args.selection)
         rows.append(evaluate_model("regressor + filter", args.regressor, batch, planner_config,
                                    args.seed, args.latency_repetitions))
     if args.flow:
         planner_config = PlannerConfig(
-            candidates=args.candidates, flow_steps=args.flow_steps, half_width=args.half_width
+            candidates=args.candidates, flow_steps=args.flow_steps, half_width=args.half_width,
+            selection=args.selection,
         )
         rows.append(evaluate_model(f"flow K={args.candidates} + filter", args.flow, batch,
                                    planner_config, args.seed, args.latency_repetitions))
     report = {
         "split": args.split, "windows": len(data), "clips": data.clips,
         "gait_counts": {gait: int((batch["gait"] == index).sum()) for index, gait in enumerate(GAITS)},
-        "half_width": args.half_width, "seed": args.seed,
+        "half_width": args.half_width, "seed": args.seed, "selection": args.selection,
         "hardware": f"{platform.processor() or platform.machine()}, {torch.get_num_threads()} threads",
         "results": rows,
     }

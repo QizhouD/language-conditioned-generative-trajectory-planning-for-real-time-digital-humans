@@ -166,6 +166,69 @@ def test_planner_uses_the_first_valid_candidate():
     assert torch.allclose(result["deltas"][0], straight(1.2), atol=1e-6)
 
 
+def walk_then_stop(moving_steps, speed=1.0, lateral=0.0):
+    deltas = torch.zeros(HORIZON_STEPS, 3)
+    deltas[:moving_steps, 1] = speed / 10.0
+    deltas[0, 0] = lateral
+    return deltas
+
+
+class ScriptedCandidates(RootMotionModel):
+    """Returns fixed candidates: [overshoots off the path, stops at 1.5 m, stops at 2.0 m]."""
+
+    def sample(self, batch, steps=8, samples=1, generator=None):
+        candidates = [walk_then_stop(30, lateral=2.0), walk_then_stop(15), walk_then_stop(20)]
+        return torch.stack([STATS.normalise(c) for c in candidates])[None]
+
+
+def scripted_planner(selection):
+    torch.manual_seed(0)
+    model = ScriptedCandidates(hidden_dim=32, encoder_layers=1, decoder_layers=1, heads=2)
+    return RootMotionPlanner(model, STATS, PlannerConfig(candidates=3, selection=selection))
+
+
+def test_goal_aware_picks_the_candidate_that_stops_on_a_reachable_goal():
+    near = make_batch([[0.0, 2.0]])  # goal 2 m ahead: within walk speed 0.9 m/s x 3 s
+    first = scripted_planner("first_valid").plan_batch(near)
+    aware = scripted_planner("goal_aware").plan_batch(near)
+    assert first["candidate_invalid"][0].tolist() == [True, False, False]
+    assert torch.allclose(first["deltas"][0], walk_then_stop(15), atol=1e-6)  # first valid
+    assert torch.allclose(aware["deltas"][0], walk_then_stop(20), atol=1e-6)  # ends on the goal
+    assert int(aware["source"][0]) == SOURCE_MODEL
+
+
+def test_goal_aware_falls_back_to_first_valid_when_the_goal_is_far_or_open():
+    far = make_batch([[0.0, 10.0]])  # 10 m > 0.9 m/s x 3 s
+    assert torch.allclose(scripted_planner("goal_aware").plan_batch(far)["deltas"][0],
+                          walk_then_stop(15), atol=1e-6)
+    open_path = make_batch([[0.0, 2.0]], ends_at_goal=False)
+    assert torch.allclose(scripted_planner("goal_aware").plan_batch(open_path)["deltas"][0],
+                          walk_then_stop(15), atol=1e-6)
+
+
+def test_goal_aware_prefers_the_slower_finish_at_equal_distance():
+    from gtp.rootmotion.planner import GOAL_AWARE_SPEED_WEIGHT
+
+    class Finishes(RootMotionModel):
+        def sample(self, batch, steps=8, samples=1, generator=None):
+            # Both end 2.0 m ahead; the first is still moving at 0.67 m/s, the second has stopped.
+            moving = torch.zeros(HORIZON_STEPS, 3)
+            moving[:, 1] = 2.0 / HORIZON_STEPS
+            return torch.stack([STATS.normalise(moving), STATS.normalise(walk_then_stop(20))])[None]
+
+    torch.manual_seed(0)
+    model = Finishes(hidden_dim=32, encoder_layers=1, decoder_layers=1, heads=2)
+    planner = RootMotionPlanner(model, STATS, PlannerConfig(candidates=2, selection="goal_aware"))
+    result = planner.plan_batch(make_batch([[0.0, 2.0]]))
+    assert GOAL_AWARE_SPEED_WEIGHT > 0
+    assert torch.allclose(result["deltas"][0], walk_then_stop(20), atol=1e-6)
+
+
+def test_unknown_selection_rule_is_rejected():
+    with pytest.raises(ValueError):
+        RootMotionPlanner(tiny_model(), STATS, PlannerConfig(selection="nearest"))
+
+
 def request_body(**overrides):
     body = {
         "history": [{"position": [10.0, 0.5, 20.0], "yaw": math.pi / 2}],
