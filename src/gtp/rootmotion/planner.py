@@ -41,8 +41,10 @@ class PlannerConfig:
     # single candidate (the regressor) every rule picks the same plan.
     # "consistent" takes the valid candidate closest to the unexecuted rest of the
     # previous plan (plan_batch's ``previous``); near the goal, or without a previous
-    # plan, it is goal_aware.
-    selection: str = "goal_aware"
+    # plan, it is goal_aware. It is the default.
+    selection: str = "consistent"
+    # Classifier-free guidance on the target speed (speed-conditioned models): 1 is off.
+    speed_guidance: float = 1.0
     limits: KinematicLimits = field(default_factory=KinematicLimits)
 
 
@@ -199,6 +201,8 @@ class RootMotionPlanner:
             batch, steps=self.config.flow_steps,
             samples=self.config.candidates if candidates is None else candidates,
             generator=generator,
+            # Passed only when on, so models with their own sample() keep working.
+            **({"guidance": self.config.speed_guidance} if self.config.speed_guidance != 1.0 else {}),
         )
         candidates = self.stats.denormalise(normalised)
         invalid = self.invalid(candidates, batch, half_width)

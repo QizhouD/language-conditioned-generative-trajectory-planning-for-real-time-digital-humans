@@ -14,6 +14,7 @@ import torch
 import yaml
 from torch import nn
 
+from gtp.rootmotion import CONTROL_HZ
 from gtp.rootmotion.model import RootMotionModel
 from gtp.rootmotion.stats import RootMotionStats
 from gtp.rootmotion.windows import (
@@ -39,6 +40,29 @@ def load_splits(config: dict) -> dict[str, RootMotionWindows]:
 
 
 SPEED_DROPOUT = 0.1
+
+
+def augment_history(batch: dict[str, torch.Tensor], position_std: float, yaw_std: float,
+                    generator: torch.Generator | None = None) -> dict[str, torch.Tensor]:
+    """Gaussian noise on the past poses, with the velocity features recomputed from them.
+
+    The current pose (the last history row, which defines the local frame) and the future
+    target are left untouched. position_std in metres, yaw_std in radians.
+    """
+    history = batch["history"]
+    positions = history[..., 0:2] * POSITION_SCALE
+    yaw = torch.atan2(history[..., 2], history[..., 3])
+    past = torch.ones_like(yaw)
+    past[:, -1] = 0.0  # keep the current pose exact
+    positions = positions + torch.randn(positions.shape, generator=generator, device=positions.device) \
+        * position_std * past[..., None]
+    yaw = yaw + torch.randn(yaw.shape, generator=generator, device=yaw.device) * yaw_std * past
+    velocity = torch.zeros_like(positions)
+    velocity[:, 1:] = (positions[:, 1:] - positions[:, :-1]) * CONTROL_HZ
+    velocity[:, 0] = velocity[:, 1]
+    features = torch.cat([positions / POSITION_SCALE, torch.sin(yaw)[..., None], torch.cos(yaw)[..., None],
+                          velocity / POSITION_SCALE], dim=-1)
+    return {**batch, "history": features}
 
 
 def drop_target_speed(batch: dict[str, torch.Tensor], probability: float,
@@ -163,6 +187,15 @@ def main() -> None:
     if weight > 0:
         print(f"position_loss_weight={weight}", flush=True)
     speed_dropout = float(training.get("speed_dropout", SPEED_DROPOUT))
+    noise_position = float(training.get("history_noise_position", 0.0))
+    noise_yaw = float(training.get("history_noise_yaw", 0.0))
+    if noise_position > 0 or noise_yaw > 0:
+        print(f"history noise: position {noise_position} m, yaw {noise_yaw} rad", flush=True)
+    # "best": lowest validation loss (default). "last": the final epoch, e.g. when the
+    # validation actor is also the held-out test actor and must not choose the checkpoint.
+    keep = training.get("checkpoint", "best")
+    if keep not in ("best", "last"):
+        raise ValueError("training.checkpoint must be 'best' or 'last'")
     if model.speed_conditioning:
         print(f"speed_conditioning: dropout={speed_dropout} range={stats.speed_range}", flush=True)
     run_dir = Path(config["run_dir"])
@@ -179,6 +212,9 @@ def main() -> None:
             if model.speed_conditioning:
                 # Only conditioned models draw this, so other configs train exactly as before.
                 batch = drop_target_speed(batch, speed_dropout)
+            if noise_position > 0 or noise_yaw > 0:
+                # Only drawn when enabled, so other configs train exactly as before.
+                batch = augment_history(batch, noise_position, noise_yaw)
             optimizer.zero_grad(set_to_none=True)
             loss = batch_loss(model, batch, stats, position_weight=weight)
             loss.backward()
@@ -197,7 +233,7 @@ def main() -> None:
                       if weight > 0 else "")
             print(f"epoch={epoch:03d} val_loss={value:.5f}{detail} elapsed={time.time() - started:.0f}s",
                   flush=True)
-            if value < best:
+            if value < best or (keep == "last" and epoch == epochs):
                 best = value
                 torch.save(
                     {"model": ema.state_dict(), "config": config, "stats": stats.to_dict(),

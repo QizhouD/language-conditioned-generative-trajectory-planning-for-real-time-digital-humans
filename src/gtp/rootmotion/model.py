@@ -84,8 +84,13 @@ class RootMotionModel(nn.Module):
         self.out = nn.Linear(hidden_dim, TARGET_DIM)
 
     def encode(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (memory, padding mask) for history, path and gait tokens."""
-        history = self.history_in(batch["history"]) + self.history_position + self.kind[0]
+        """Return (memory, padding mask) for history, path and gait tokens.
+
+        Only the last ``history_steps`` history tokens are read, so a model built with a
+        shorter history works on the same 20-step requests and windows.
+        """
+        recent = batch["history"][:, -self.history_position.shape[0]:]
+        history = self.history_in(recent) + self.history_position + self.kind[0]
         path = self.path_in(batch["path"]) + self.path_position + self.kind[1]
         gait = self.gait_embedding(batch["gait"]) + self.kind[2]
         if self.speed_conditioning:
@@ -136,17 +141,33 @@ class RootMotionModel(nn.Module):
     @torch.no_grad()
     def sample(
         self, batch: dict[str, torch.Tensor], steps: int = 8, samples: int = 1,
-        generator: torch.Generator | None = None,
+        generator: torch.Generator | None = None, guidance: float = 1.0,
     ) -> torch.Tensor:
-        """Draw ``samples`` normalised futures per batch row: [B, samples, T, 3]."""
+        """Draw ``samples`` normalised futures per batch row: [B, samples, T, 3].
+
+        ``guidance`` w != 1 applies classifier-free guidance on the target speed (speed-
+        conditioned models only): every prediction becomes u + w (c - u), with c conditioned
+        on the given speed and u on "unspecified". Rows without a speed get c = u, so they
+        are unchanged. It costs a second decoder pass per flow step.
+        """
+        guided = self.speed_conditioning and guidance != 1.0 and "target_speed" in batch
         memory, padding = self.encode(batch)
+        if guided:
+            unconditioned = {**batch, "target_speed": torch.full_like(batch["target_speed"], float("nan"))}
+            memory_u, _ = self.encode(unconditioned)
         batch_size = memory.shape[0]
         if self.deterministic:
             state = torch.zeros(batch_size, self.horizon_steps, TARGET_DIM, device=memory.device)
             ones = torch.ones(batch_size, device=memory.device)
-            return self.decode(state, ones, memory, padding).unsqueeze(1)
+            out = self.decode(state, ones, memory, padding)
+            if guided:
+                base = self.decode(state, ones, memory_u, padding)
+                out = base + guidance * (out - base)
+            return out.unsqueeze(1)
         memory = memory.repeat_interleave(samples, dim=0)
         padding = padding.repeat_interleave(samples, dim=0)
+        if guided:
+            memory_u = memory_u.repeat_interleave(samples, dim=0)
         count = batch_size * samples
         state = torch.randn(
             count, self.horizon_steps, TARGET_DIM, generator=generator, device=memory.device
@@ -154,5 +175,9 @@ class RootMotionModel(nn.Module):
         delta = 1.0 / steps
         for index in range(steps):
             time = torch.full((count,), index * delta, device=memory.device)
-            state = state + delta * self.decode(state, time, memory, padding)
+            velocity = self.decode(state, time, memory, padding)
+            if guided:
+                base = self.decode(state, time, memory_u, padding)
+                velocity = base + guidance * (velocity - base)
+            state = state + delta * velocity
         return state.view(batch_size, samples, self.horizon_steps, TARGET_DIM)

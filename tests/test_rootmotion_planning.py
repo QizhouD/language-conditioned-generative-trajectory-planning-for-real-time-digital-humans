@@ -224,8 +224,8 @@ def test_goal_aware_prefers_the_slower_finish_at_equal_distance():
     assert torch.allclose(result["deltas"][0], walk_then_stop(20), atol=1e-6)
 
 
-def test_goal_aware_is_the_default_selection():
-    assert PlannerConfig().selection == "goal_aware"
+def test_consistent_is_the_default_and_without_a_previous_plan_acts_as_goal_aware():
+    assert PlannerConfig().selection == "consistent"
     near = make_batch([[0.0, 2.0]])
     default = RootMotionPlanner(scripted_planner("goal_aware").model, STATS, PlannerConfig(candidates=3))
     assert torch.allclose(default.plan_batch(near)["deltas"][0], walk_then_stop(20), atol=1e-6)

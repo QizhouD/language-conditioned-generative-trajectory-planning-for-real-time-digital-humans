@@ -16,14 +16,42 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 
+import math
+
+import numpy as np
 import torch
 
 from gtp.rootmotion.planner import (
     SOURCE_HOLD, SOURCE_NAMES, PlannerConfig, RootMotionPlanner,
 )
 from gtp.rootmotion.request import RequestError, build_batch, build_plan
+from gtp.rootmotion.windows import to_local
 
 MAX_BODY_BYTES = 1_000_000
+MAX_PREVIOUS_POINTS = 64
+
+
+def previous_plan_tensor(points: Any, frame: Mapping[str, Any]) -> torch.Tensor | None:
+    """The unexecuted part of the previous plan, world [x, y, z] per step from now, as local [1, M, 2].
+
+    Optional: absent or empty means no previous plan, and "consistent" selection then
+    behaves as goal_aware.
+    """
+    if points is None or (isinstance(points, list) and not points):
+        return None
+    if not isinstance(points, list) or len(points) > MAX_PREVIOUS_POINTS:
+        raise RequestError(f"previous_plan must be a list of at most {MAX_PREVIOUS_POINTS} [x, y, z] points")
+    values = []
+    for index, point in enumerate(points):
+        if not isinstance(point, (list, tuple)) or len(point) != 3:
+            raise RequestError(f"previous_plan[{index}] must be [x, y, z]")
+        x, _, z = (float(v) for v in point)
+        if not (math.isfinite(x) and math.isfinite(z)):
+            raise RequestError(f"previous_plan[{index}] contains a non-finite value")
+        values.append((x, z))
+    origin = np.array([frame["origin"][0], frame["origin"][2]])
+    local = to_local(np.asarray(values, dtype=np.float64), origin, frame["yaw"])
+    return torch.as_tensor(local, dtype=torch.float32)[None]
 
 
 class PlanService:
@@ -35,6 +63,7 @@ class PlanService:
 
     def plan(self, request: Mapping[str, Any]) -> dict[str, Any]:
         batch, frame = build_batch(request)
+        previous = previous_plan_tensor(request.get("previous_plan"), frame)
         half_width = request.get("corridor_half_width")
         if half_width is not None:
             half_width = float(half_width)
@@ -50,7 +79,7 @@ class PlanService:
             generator = torch.Generator(device=self.planner.device).manual_seed(int(request["seed"]))
         started = time.perf_counter()
         with self.lock:
-            result = self.planner.plan_batch(batch, generator, half_width, candidates)
+            result = self.planner.plan_batch(batch, generator, half_width, candidates, previous)
         source = int(result["source"][0])
         rejected = int(result["candidate_invalid"][0].sum())
         plan = build_plan(
@@ -62,6 +91,7 @@ class PlanService:
         plan["rejected_candidates"] = rejected
         plan["candidates"] = int(result["candidate_invalid"].shape[1])
         plan["target_speed"] = self.describe_target_speed(frame["target_speed"], result)
+        plan["previous_plan_used"] = previous is not None and self.planner.config.selection == "consistent"
         plan["latency_ms"] = (time.perf_counter() - started) * 1_000.0
         return plan
 
@@ -133,9 +163,11 @@ def main() -> None:
     parser.add_argument("--flow-steps", type=int, default=8)
     parser.add_argument("--half-width", type=float, default=0.5)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--speed-guidance", type=float, default=1.0)
     args = parser.parse_args()
     config = PlannerConfig(
-        candidates=args.candidates, flow_steps=args.flow_steps, half_width=args.half_width
+        candidates=args.candidates, flow_steps=args.flow_steps, half_width=args.half_width,
+        speed_guidance=args.speed_guidance,
     )
     planner = RootMotionPlanner.from_checkpoint(args.checkpoint, config, args.device)
     server = serve(planner, args.host, args.port)

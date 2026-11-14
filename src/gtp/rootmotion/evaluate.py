@@ -205,7 +205,9 @@ def main() -> None:
     parser.add_argument("--flow-steps", type=int, default=8)
     parser.add_argument("--half-width", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--selection", choices=SELECTION_RULES, default="goal_aware",
+    parser.add_argument("--speed-guidance", type=float, default=1.0,
+                        help="classifier-free guidance weight on the target speed (1 = off)")
+    parser.add_argument("--selection", choices=SELECTION_RULES, default="consistent",
                         help="candidate selection; the regressor has one candidate, so only flow changes")
     parser.add_argument("--latency-repetitions", type=int, default=50)
     parser.add_argument("--no-target-speed", action="store_true",
@@ -233,13 +235,13 @@ def main() -> None:
         batch = {**batch, "target_speed": torch.full_like(batch["target_speed"], float("nan"))}
     if args.regressor:
         planner_config = PlannerConfig(candidates=1, half_width=args.half_width,
-                                       selection=args.selection)
+                                       selection=args.selection, speed_guidance=args.speed_guidance)
         rows.append(evaluate_model("regressor + filter", args.regressor, batch, planner_config,
                                    args.seed, args.latency_repetitions))
     if args.flow:
         planner_config = PlannerConfig(
             candidates=args.candidates, flow_steps=args.flow_steps, half_width=args.half_width,
-            selection=args.selection,
+            selection=args.selection, speed_guidance=args.speed_guidance,
         )
         rows.append(evaluate_model(f"flow K={args.candidates} + filter", args.flow, batch,
                                    planner_config, args.seed, args.latency_repetitions))

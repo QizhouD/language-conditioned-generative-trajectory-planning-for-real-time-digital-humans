@@ -696,7 +696,8 @@ def main() -> None:
     parser.add_argument("--replan-interval", type=float, default=1.0,
                         help="seconds; the LLM-NPC scene's TrajectoryPlanFollower uses 1 s")
     parser.add_argument("--latency-steps", type=int, default=0)
-    parser.add_argument("--selection", default="goal_aware",
+    parser.add_argument("--speed-guidance", type=float, default=1.0)
+    parser.add_argument("--selection", default="consistent",
                         help="first_valid, closest or goal_aware; the regressor has one candidate")
     parser.add_argument("--candidates", type=int, default=16)
     parser.add_argument("--half-width", type=float, default=0.5)
@@ -729,7 +730,7 @@ def main() -> None:
             candidates = 1 if method == "regressor" else args.candidates
             planner = RootMotionPlanner.from_checkpoint(
                 path, PlannerConfig(candidates=candidates, half_width=args.half_width,
-                                    selection=args.selection))
+                                    selection=args.selection, speed_guidance=args.speed_guidance))
             stats = planner.stats
             per_seed.append(run_method(method, routes, planner.stats, planner=planner, **options))
             print(f"{method} {path}: done", flush=True)
