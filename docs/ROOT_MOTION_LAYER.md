@@ -283,15 +283,15 @@ definition):
   0.41 to 0.78 m/s off on average.
 - **The mean speed and arrival time did not catch up.** On the Unity demo route at
   0.9 m/s the flow model averages 0.510 m/s and arrives after 22.3 s (unconditioned:
-  0.488 m/s, 22.9 s; spring 0.87 m/s, 12.3 s). Its ratio of mean speed to cruise is
-  0.65, close to the capture's own 0.67 for the same quantity (walk), against 0.94
-  for the spring. The label is a high speed and humans average two thirds of it, so
-  asking the model for "0.9" asks for a human whose peak is 0.9.
-- **Starts are slow, as in the capture.** Flow's first second averages 0.26 m/s at
-  0.9; capture starts from rest with a similar label average 0.14 m/s, the spring
-  0.56. Flow also arrives at a human-like speed (0.52 m/s when it enters the 0.25 m
-  tolerance, capture median 0.58), where the spring arrives at 0.83 and the engine's
-  lock stops it dead.
+  0.488 m/s, 22.9 s; spring 0.87 m/s, 12.3 s). The next section breaks this down
+  against comparable human walks: the slowness is mostly a half-speed plateau after
+  the start, and it is not human-like on routes over about 6 m.
+
+  (An earlier version of this section compared flow with capture *windows*: a mean
+  / cruise ratio of 0.67, a first-second speed of 0.14 m/s from rest and an arrival
+  speed of 0.58 m/s. Those windows mix turning, dawdling before a start and walks of
+  every length, so they were not a comparable reference; the rest-to-rest walks below
+  replace them.)
 - **Replanning interval.** With the speed given, the walk cruise speed no longer
   depends much on it (0.79 to 0.88 on the 12 m straight across 0.2 to 3 s); on the
   Unity route 3 s is still faster (0.63 against 0.51 m/s mean speed) and run still
@@ -301,6 +301,79 @@ Against the spring told the same speed, flow keeps its advantage on acceleration
 and turn-rate realism and on staying in the corridor, and loses on speed W1, path
 deviation, stop error, seams (0.96 against 0.03 m/s² at walk 0.9) and run speed
 tracking.
+
+### Where the walking time goes (walk only)
+
+**Human reference.** Rest-to-rest walks cut from the capture (rest = below 0.2 m/s
+for 1 s; `closed_loop.capture_segments`): 73 walks over five actors, 10 of them by
+the test actor. Matched to the closed-loop routes (8 to 15 m, label 0.8 to 1.1,
+n = 6), humans reach 0.45 m/s after 0.5 s and 0.81 m/s after 2.8 s (p25 1.4,
+p75 4.8), average 0.67 m/s, i.e. 0.72 of their label, and enter the last 0.25 m at
+0.59 m/s. The 0.92 m/s of capture windows on single 5 to 10 m straight paths is a
+mid-walk figure (the history is already moving) and overstates a start from rest.
+
+**Flow at 0.9 m/s** (speed-conditioned, goal-aware, five seeds):
+
+| Route | Time to 0.45 m/s | Time to 0.81 m/s | Share of that time below 0.45 | Mean speed / asked | Time lost: start / cruise / deceleration |
+|---|---|---|---|---|---|
+| 6 m straight | 0.2 s | 2.3 ± 1.5 s | 1% | 0.78 | 0.8 / 0.7 / 0.5 s |
+| 12 m straight | 0.9 s | 8.5 ± 3.1 s | 48% | 0.67 | 4.7 / 1.7 / 0.5 s |
+| Unity demo route | 1.2 s | 16.7 ± 4.3 s | 56% | 0.57 | 9.0 / 0.5 / 0.2 s |
+| Humans, 8 to 15 m | 0.5 s | 2.8 s | – | 0.72 of their label | – |
+
+("Time lost" is a phase's duration minus the time the same distance takes at the
+asked speed; start ends at the first 90% of the ask, deceleration begins after the
+last.)
+
+- **On 6 m flow is human-like; on 12 m and the Unity route it is not.** It gets to
+  half speed as fast as a person, then sits on a 0.3 to 0.6 m/s plateau with stalls
+  for 8 to 17 s before the cruise, where a person needs about 3 s. That plateau is
+  most of the lost time; the cruise (0.76 to 0.84 m/s) and the deceleration (about
+  1 s, as in the capture) cost little.
+- **The cruise does not sag at each replan.** The speed's autocorrelation at the
+  replan period (10 steps) is near zero (−0.09 to 0.21 for goal-aware) and the mean
+  speed is flat across the steps of a replan cycle (amplitude 5 to 14%).
+- The start duration varies a lot between runs (standard deviation 3 to 7 s).
+
+**Closed loop on the captured walks.** Each walk becomes a route (RDP, 0.25 m), the
+run starts from the captured history and asks for the walk's own label; the capture
+is the reference. Medians over walks, mean ± std over five seeds:
+
+| Method | Short walks (8, 3 to 31 m): arrival / capture | Mean speed / capture | W1 speed | W1 accel | W1 turn | Long walks (2, 162 and 272 m): arrival / capture |
+|---|---|---|---|---|---|---|
+| Flow, goal-aware, K = 16 | 1.19 ± 0.03 | 0.74 | 0.202 | 0.384 | 0.605 | 1.42 |
+| Flow, consistent, K = 16 | 1.08 ± 0.05 | 0.77 | 0.200 | 0.374 | 0.591 | 1.33 |
+| Flow, consistent, K = 64 | 1.03 ± 0.04 | 0.76 | 0.206 | 0.387 | 0.540 | 1.35 |
+| Regressor | 1.25 ± 0.06 | 0.63 | 0.290 | 0.600 | 0.752 | 1.66 |
+| Spring | 0.66 | 1.32 | 0.182 | **0.334** | 0.677 | 0.77 |
+| Constant speed | 0.62 | 1.54 | 0.319 | 0.851 | 0.817 | 0.71 |
+
+Flow is slower than the person who walked the route (about 20% longer on short
+walks, 40% on the two long ones); the spring told the same label is much faster
+than the person (a third shorter). Ten walks from one actor is a small sample.
+
+### Replan-consistent selection (ablation, not the default)
+
+`selection: consistent` takes, among the valid candidates, the one closest to the
+part of the previous plan not yet executed (mean position distance over the
+overlapping steps + 0.1 s × first-step velocity difference); near the goal, or
+without a previous plan, it is goal-aware.
+
+| | Goal-aware K = 16 | Consistent K = 16 | Goal-aware K = 64 | Consistent K = 64 |
+|---|---|---|---|---|
+| Seam accel / other, synthetic routes (m/s²) | 0.98 / 0.56 | 0.80 / 0.52 | 0.84 / 0.57 | 0.75 / 0.52 |
+| Seam accel / other, captured walks | 1.33 / 0.82 | 1.24 / 0.82 | 1.43 / 0.86 | 1.34 / 0.84 |
+| Short captured walks: arrival / capture | 1.19 | 1.08 | 1.12 | 1.03 |
+| Short captured walks: mean speed / capture | 0.74 | 0.77 | 0.75 | 0.76 |
+| Planning time per request (CPU) | 38 ms | 37 ms | 81 ms | 84 ms |
+
+It shortens arrival on the short captured walks by about 9% and seam jumps by 7 to
+18%, but the seams stay about 1.5 times the other steps (the spring's are near zero)
+and the mean speed barely moves. Selection cannot add speed: conditioned on a slow
+history all K candidates are slow, and the seam is the new plan's first steps
+departing from the old plan's continuation, which every candidate does. K = 64
+costs twice the time and does not change the picture (the synthetic-route
+differences between K = 16 and 64 are within run-to-run variance at five runs).
 
 ![Held-out windows](rootmotion-figures/test-windows-cpu.png)
 
@@ -348,13 +421,24 @@ python -m gtp.rootmotion.closed_loop --config configs/rootmotion_flow_speed_cpu.
 `--target-speed` asks every request of a gait for that speed (and runs only those
 gaits); `--lock-on-arrival` stops at 0.25 m like the Unity follower.
 
+## Limitations
+
+- **Scope is walking.** With a target speed the run cruise speed misses the ask by
+  0.4 to 0.8 m/s on average (overshooting on long straights, undershooting on short
+  routes); run is not pursued further.
+- **Closed-loop starting plateau.** On walks longer than about 6 m flow spends 8 to
+  17 s on a 0.3 to 0.6 m/s plateau before cruising (humans about 3 s), so routes take
+  longer than they take people.
+- **Small human reference.** Ten captured walks from one test actor, six
+  length-matched human walks for the start comparison; LAFAN1's small capture
+  volume makes long walks fold back.
+
 ## Next steps
 
-1. Closed-loop speed: speed conditioning makes the walking cruise speed follow the
-   ask, but mean speed and arrival time stay human-like, well below the spring.
-   Whether that is wanted is a design question; if not, a mean-speed label or asking
-   above the desired mean would be the next things to try. Run speed tracking does
-   not work yet.
+1. Closed-loop starting plateau: plans conditioned on a slow history stay slow, and
+   candidate selection cannot fix it. Training on closed-loop rollouts, or making
+   the start of a walk a conditioned event rather than something inferred from the
+   history, are the candidates.
 2. Arrival: goal-aware selection halves the gap; the rest needs the model itself to
    stop, for example classifier-free guidance on the goal flag or a much larger
    position-loss weight, and the closed-loop shuffling on the goal must stop.
