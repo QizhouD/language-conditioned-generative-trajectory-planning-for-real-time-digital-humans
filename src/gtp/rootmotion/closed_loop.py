@@ -39,13 +39,13 @@ import yaml
 
 from gtp.rootmotion import CONTROL_HZ, GAITS, HISTORY_STEPS, HORIZON_STEPS
 from gtp.rootmotion.baselines import constant_speed_follow, spring_follow
-from gtp.rootmotion.paths import arclength, point_at, project
+from gtp.rootmotion.paths import arclength, point_at, project, rdp
 from gtp.rootmotion.planner import (
     SOURCE_HOLD, SOURCE_MODEL, SOURCE_SPRING, PlannerConfig, RootMotionPlanner, initial_velocity,
 )
 from gtp.rootmotion.request import WALK_SPEED_THRESHOLD, build_batch, build_plan
 from gtp.rootmotion.stats import RootMotionStats
-from gtp.rootmotion.windows import path_polyline
+from gtp.rootmotion.windows import path_polyline, target_speed_label, to_local
 
 ARRIVAL_RADIUS = 0.25  # metres; the Unity follower's arrival tolerance
 # Arrival also needs this much of the route covered, so a fold-back whose goal is its
@@ -116,16 +116,23 @@ def unity_route(gait: str = "walk") -> Route:
 
 # --------------------------------------------------------------------------- planners
 
-# A plan function takes a /plan request and returns (deltas [T, 3], source, details).
-PlanFunction = Callable[[dict], tuple[np.ndarray, int, dict]]
+# A plan function takes a /plan request and, optionally, the world (x, z) positions the
+# previous plan still had to visit (steps 1..M from now), and returns
+# (deltas [T, 3], source, details).
+PlanFunction = Callable[..., tuple[np.ndarray, int, dict]]
 
 
 def model_plan_function(planner: RootMotionPlanner, generator: torch.Generator | None) -> PlanFunction:
     """The service's code path: build_batch -> plan_batch, plus selection diagnostics."""
 
-    def plan(request: dict) -> tuple[np.ndarray, int, dict]:
-        batch, _ = build_batch(request)  # carries request["target_speed"] if any
-        result = planner.plan_batch(batch, generator)
+    def plan(request: dict, previous: np.ndarray | None = None) -> tuple[np.ndarray, int, dict]:
+        batch, frame = build_batch(request)  # carries request["target_speed"] if any
+        local = None
+        if previous is not None and len(previous):
+            origin = np.array([frame["origin"][0], frame["origin"][2]])
+            local = torch.as_tensor(to_local(np.asarray(previous, dtype=np.float64), origin, frame["yaw"]),
+                                    dtype=torch.float32)[None]
+        result = planner.plan_batch(batch, generator, previous=local)
         candidates = result["candidates"][0]  # [K, T, 3]
         invalid = result["candidate_invalid"][0]
         speeds = torch.linalg.vector_norm(candidates[..., :2], dim=-1).mean(dim=-1) * CONTROL_HZ
@@ -143,7 +150,7 @@ def model_plan_function(planner: RootMotionPlanner, generator: torch.Generator |
 def baseline_plan_function(kind: str, gait_speed: Sequence[float]) -> PlanFunction:
     """Spring or constant-speed follower on the same local frame as the model."""
 
-    def plan(request: dict) -> tuple[np.ndarray, int, dict]:
+    def plan(request: dict, previous: np.ndarray | None = None) -> tuple[np.ndarray, int, dict]:
         batch, _ = build_batch(request)
         polyline, valid = path_polyline(batch)
         vertices = polyline[0][valid[0]].numpy().astype(np.float64)
@@ -200,6 +207,7 @@ def simulate(
     route: Route, plan: PlanFunction, *, replan_interval: float = 1.0, latency_steps: int = 0,
     time_limit: float | None = None, gait_speed: float | None = None, settle_early_stop: bool = True,
     lock_on_arrival: bool = False, request_extras: dict | None = None,
+    initial_history: Sequence[tuple[float, float, float]] | None = None,
 ) -> Rollout:
     """Roll a planner out along ``route`` from rest. See the module docstring.
 
@@ -209,6 +217,9 @@ def simulate(
     distance; here route progress must also be near the end, so a fold-back whose goal
     is its start is not locked at t = 0. After locking the pose is held for 2 s and the
     run ends. ``request_extras`` is merged into every request (e.g. target_speed).
+    ``initial_history`` (world (x, z, yaw), oldest first, the last being the start) replaces
+    "standing at the start", e.g. to start from a motion-capture state. Every plan function
+    also receives the positions the active plan still had to visit.
     """
     every = max(1, round(replan_interval * CONTROL_HZ))
     if time_limit is None:
@@ -220,8 +231,13 @@ def simulate(
     cumulative = arclength(points)
     goal = points[-1]
 
-    start = (float(points[0, 0]), float(points[0, 1]), float(route.start_yaw))
-    history = [start] * HISTORY_STEPS
+    if initial_history:
+        history = [tuple(float(v) for v in pose) for pose in initial_history][-HISTORY_STEPS:]
+        history = [history[0]] * (HISTORY_STEPS - len(history)) + history
+        start = history[-1]
+    else:
+        start = (float(points[0, 0]), float(points[0, 1]), float(route.start_yaw))
+        history = [start] * HISTORY_STEPS
     poses, seams = [start], [False]
     sources: list[int] = []
     details: list[dict] = []
@@ -239,7 +255,9 @@ def simulate(
             request = _request(history, path, route.gait)
             if request_extras:
                 request.update(request_extras)
-            deltas, source, detail = plan(request)
+            remaining = (active[index + 1:, :2] if active is not None and index + 1 < len(active)
+                         else None)
+            deltas, source, detail = plan(request, remaining)
             _, frame = build_batch(request)
             world = build_plan(np.asarray(deltas).tolist(), frame, fallback=source == SOURCE_HOLD)
             plan_poses = np.array([[p["position"][0], p["position"][2], p["yaw"]] for p in world.trajectory])
@@ -444,6 +462,103 @@ def reference_kinematics(config: dict) -> dict[str, dict[str, np.ndarray]]:
             "turn_rate": (rows[..., 2] * CONTROL_HZ).flatten().numpy(),
         }
     return out
+
+
+# --------------------------------------------------------------------------- phases and capture routes
+
+
+def phase_breakdown(speed: np.ndarray, asked: float, fraction: float = 0.9) -> dict:
+    """Split a run's step speeds (start to arrival) into start, cruise and deceleration.
+
+    Start ends at the first step reaching ``fraction`` x ``asked``; deceleration begins after
+    the last such step; cruise is in between. A run that never reaches it is all start.
+    Durations in seconds, speeds in m/s, cruise_cv = std / mean of the cruise speeds.
+    """
+    speed = np.asarray(speed, dtype=np.float64)
+    reach = np.flatnonzero(speed >= fraction * asked)
+    total = len(speed) / CONTROL_HZ
+    if not len(reach):
+        return {"reached": False, "total_s": total, "start_s": total, "cruise_s": 0.0, "decel_s": 0.0,
+                "start_speed": float(speed.mean()) if len(speed) else 0.0, "cruise_speed": None,
+                "decel_speed": None, "cruise_cv": None}
+    first, last = int(reach[0]), int(reach[-1])
+    start, cruise, decel = speed[:first], speed[first:last + 1], speed[last + 1:]
+
+    def mean(part):
+        return float(part.mean()) if len(part) else None
+
+    return {
+        "reached": True, "total_s": total,
+        "start_s": len(start) / CONTROL_HZ, "cruise_s": len(cruise) / CONTROL_HZ,
+        "decel_s": len(decel) / CONTROL_HZ,
+        "start_speed": mean(start), "cruise_speed": mean(cruise), "decel_speed": mean(decel),
+        "cruise_cv": float(cruise.std() / cruise.mean()) if len(cruise) > 1 and cruise.mean() > 0 else None,
+    }
+
+
+def speed_by_progress(positions: np.ndarray, route: np.ndarray, bins: int = 20) -> np.ndarray:
+    """Mean step speed in each of ``bins`` equal stretches of route progress (NaN if empty)."""
+    positions = np.asarray(positions, dtype=np.float64)
+    route = np.asarray(route, dtype=np.float64)
+    cumulative = arclength(route)
+    progress, best = [], 0.0
+    for position in positions:
+        best = max(best, project(route, cumulative, position, best, window=3.0))
+        progress.append(best)
+    progress = np.asarray(progress)
+    speed = np.linalg.norm(np.diff(positions, axis=0), axis=1) * CONTROL_HZ
+    where = np.minimum((progress[1:] / max(cumulative[-1], 1e-9) * bins).astype(int), bins - 1)
+    return np.array([speed[where == b].mean() if (where == b).any() else np.nan for b in range(bins)])
+
+
+@dataclass
+class CaptureSegment:
+    """A motion-capture walk from rest to rest, as a closed-loop route with ground truth."""
+
+    clip: str
+    start: int  # track index of the last pose at rest
+    end: int  # track index of the first pose at rest again
+    route: Route
+    history: list  # HISTORY_STEPS world (x, z, yaw) poses ending at the start
+    poses: np.ndarray  # captured (x, z, yaw) from start to end
+    target_speed: float  # the target_speed label of the walk
+
+
+def capture_segments(track: np.ndarray, clip: str, gait: str = "walk", *, stop_speed: float = 0.2,
+                     stop_steps: int = 10, min_length: float = 2.0, epsilon: float = 0.25,
+                     percentile: float = 90.0) -> list[CaptureSegment]:
+    """Walks from one rest (speed < stop_speed for at least stop_steps) to the next.
+
+    The route is the RDP simplification (``epsilon``) of the captured trace, the start state
+    is the captured history, and the target speed is the window label's definition over the
+    walk. Walks shorter than ``min_length`` or without a full history are skipped.
+    """
+    positions, yaw = track[:, :2].astype(np.float64), track[:, 2].astype(np.float64)
+    speed = np.hypot(*np.diff(positions, axis=0).T) * CONTROL_HZ
+    rests, run_start = [], None
+    for index, value in enumerate(list(speed < stop_speed) + [False]):
+        if value and run_start is None:
+            run_start = index
+        elif not value and run_start is not None:
+            if index - run_start >= stop_steps:
+                rests.append((run_start, index - 1))  # step speeds run_start..index-1 are slow
+            run_start = None
+    segments = []
+    for (_, rest_end), (next_start, _) in zip(rests, rests[1:]):
+        start, end = rest_end + 1, next_start  # poses: last at rest, first at rest again
+        if start < HISTORY_STEPS - 1 or end <= start:
+            continue
+        trace = positions[start:end + 1]
+        if arclength(trace)[-1] < min_length:
+            continue
+        waypoints = tuple((float(x), float(z)) for x, z in trace[rdp(trace, epsilon)])
+        history = [(float(positions[k, 0]), float(positions[k, 1]), float(yaw[k]))
+                   for k in range(start - HISTORY_STEPS + 1, start + 1)]
+        label = target_speed_label(speed[start:end], stop_speed, percentile)
+        route = Route(f"capture/{clip}/{start}-{end}", waypoints, float(yaw[start]), gait)
+        segments.append(CaptureSegment(clip, start, end, route, history,
+                                       np.column_stack([trace, yaw[start:end + 1]]), label))
+    return segments
 
 
 # --------------------------------------------------------------------------- experiments

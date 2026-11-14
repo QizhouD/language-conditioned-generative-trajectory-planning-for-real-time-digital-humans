@@ -24,11 +24,13 @@ class Forward:
 
     def __init__(self, source=SOURCE_MODEL):
         self.calls = []
+        self.previous = []
         self.source = source
 
-    def __call__(self, request):
+    def __call__(self, request, previous=None):
         batch, _ = build_batch(request)
         self.calls.append(request)
+        self.previous.append(previous)
         count = int(batch["path_valid"][0].sum())
         remaining = float(batch["path"][0, count - 1, 2]) * 5.0 if count else 0.0
         deltas = np.zeros((HORIZON_STEPS, 3))
