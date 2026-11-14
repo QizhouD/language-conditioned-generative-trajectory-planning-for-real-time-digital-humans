@@ -19,9 +19,12 @@ from gtp.rootmotion.windows import POSITION_SCALE, path_polyline, trajectory_pos
 
 SOURCE_MODEL, SOURCE_SPRING, SOURCE_HOLD = 0, 1, 2
 SOURCE_NAMES = ("model", "spring_fallback", "hold")
-SELECTION_RULES = ("first_valid", "closest", "goal_aware")
+SELECTION_RULES = ("first_valid", "closest", "goal_aware", "consistent")
 # goal_aware cost: endpoint distance to the goal (m) + this many seconds of final speed (m/s).
 GOAL_AWARE_SPEED_WEIGHT = 0.5
+# consistent cost: mean distance (m) to the previous plan's unexecuted positions over the
+# overlapping steps + this many seconds of first-step velocity difference (m/s).
+CONSISTENCY_VELOCITY_WEIGHT = 0.1
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,9 @@ class PlannerConfig:
     # reach of this plan: then it takes the valid candidate that ends nearest the
     # goal and slowest (see goal_within_reach and GOAL_AWARE_SPEED_WEIGHT). With a
     # single candidate (the regressor) every rule picks the same plan.
+    # "consistent" takes the valid candidate closest to the unexecuted rest of the
+    # previous plan (plan_batch's ``previous``); near the goal, or without a previous
+    # plan, it is goal_aware.
     selection: str = "goal_aware"
     limits: KinematicLimits = field(default_factory=KinematicLimits)
 
@@ -136,6 +142,27 @@ class RootMotionPlanner:
         changed = given & (clamped != speed)
         return {**batch, "target_speed": torch.where(given, clamped, speed)}, changed
 
+    @staticmethod
+    def consistency_cost(candidates: torch.Tensor, previous: torch.Tensor) -> torch.Tensor:
+        """Per candidate [B, K]: how far it departs from the previous plan's unexecuted part.
+
+        Mean distance between the candidate's and the previous plan's positions over the
+        steps both cover, plus CONSISTENCY_VELOCITY_WEIGHT x the difference between their
+        first-step velocities. Rows with no previous positions get NaN.
+        """
+        positions = trajectory_positions(candidates)[..., 1:, :]  # [B, K, T, 2]
+        overlap = min(positions.shape[-2], previous.shape[-2])
+        reference = previous[:, None, :overlap, :].to(positions.dtype)
+        present = torch.isfinite(reference).all(dim=-1)  # [B, 1, M]
+        gap = torch.linalg.vector_norm(positions[..., :overlap, :] - torch.nan_to_num(reference), dim=-1)
+        count = present.sum(dim=-1)
+        mean_gap = (gap * present).sum(dim=-1) / count.clamp_min(1)
+        first = positions[..., 0, :] * CONTROL_HZ  # velocity of the first step (origin is now)
+        before = torch.nan_to_num(previous[:, None, 0, :].to(positions.dtype)) * CONTROL_HZ
+        velocity_gap = torch.linalg.vector_norm(first - before, dim=-1)
+        cost = mean_gap + CONSISTENCY_VELOCITY_WEIGHT * velocity_gap
+        return cost.masked_fill(count == 0, float("nan"))
+
     def spring_fallback(self, batch: dict[str, torch.Tensor], row: int) -> np.ndarray:
         polyline, valid = path_polyline(batch)
         vertices = polyline[row][valid[row]].cpu().numpy()
@@ -156,7 +183,14 @@ class RootMotionPlanner:
     def plan_batch(
         self, batch: dict[str, torch.Tensor], generator: torch.Generator | None = None,
         half_width: float | None = None, candidates: int | None = None,
+        previous: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
+        """Sample, filter and select one plan per row.
+
+        ``previous`` ([B, M, 2], current local frame, NaN where absent) holds the positions
+        the previous plan still had to visit at steps 1..M from now; only the "consistent"
+        rule reads it.
+        """
         batch = {key: value.to(self.device) for key, value in batch.items()}
         speed_clipped = None
         if self.model.speed_conditioning and "target_speed" in batch:
@@ -177,7 +211,7 @@ class RootMotionPlanner:
             choice = cost.masked_fill(invalid, float("inf")).argmin(dim=1)
         else:
             choice = (~invalid).float().argmax(dim=1)
-            if self.config.selection == "goal_aware":
+            if self.config.selection in ("goal_aware", "consistent"):
                 near, goal = goal_within_reach(batch, self.reference_speed(batch), candidates.shape[-2])
                 endpoint = trajectory_positions(candidates)[..., -1, :]
                 miss = torch.linalg.vector_norm(endpoint - goal[:, None, :], dim=-1)
@@ -186,6 +220,12 @@ class RootMotionPlanner:
                 cost = (miss + GOAL_AWARE_SPEED_WEIGHT * final_speed).masked_fill(invalid, float("inf"))
                 # All-invalid rows keep first_valid's index; the fallback replaces them anyway.
                 choice = torch.where(near & (~invalid).any(dim=1), cost.argmin(dim=1), choice)
+                if self.config.selection == "consistent" and previous is not None:
+                    consistent = self.consistency_cost(candidates, previous.to(self.device))
+                    has_previous = torch.isfinite(consistent).any(dim=1)
+                    consistent = torch.nan_to_num(consistent, nan=float("inf")).masked_fill(invalid, float("inf"))
+                    use = has_previous & ~near & (~invalid).any(dim=1)
+                    choice = torch.where(use, consistent.argmin(dim=1), choice)
         deltas = candidates[rows, choice].clone()
         source = torch.full((len(rows),), SOURCE_MODEL, device=self.device)
         for row in invalid.all(dim=1).nonzero(as_tuple=True)[0].tolist():
