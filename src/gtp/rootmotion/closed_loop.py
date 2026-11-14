@@ -147,7 +147,7 @@ def model_plan_function(planner: RootMotionPlanner, generator: torch.Generator |
     return plan
 
 
-SPRING_TUNABLE = ("halflife", "deceleration", "arrival_seconds", "lookahead_seconds")
+SPRING_TUNABLE = ("halflife", "deceleration", "arrival_seconds", "lookahead_seconds", "min_lookahead")
 
 
 def baseline_plan_function(kind: str, gait_speed: Sequence[float],
