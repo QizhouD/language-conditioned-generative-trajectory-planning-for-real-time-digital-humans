@@ -352,12 +352,14 @@ Flow is slower than the person who walked the route (about 20% longer on short
 walks, 40% on the two long ones); the spring told the same label is much faster
 than the person (a third shorter). Ten walks from one actor is a small sample.
 
-### Replan-consistent selection (ablation, not the default)
+### Replan-consistent selection (the default since f15c699)
 
 `selection: consistent` takes, among the valid candidates, the one closest to the
 part of the previous plan not yet executed (mean position distance over the
 overlapping steps + 0.1 s × first-step velocity difference); near the goal, or
-without a previous plan, it is goal-aware.
+without a previous plan, it is goal-aware. The service receives the previous plan
+as the optional `previous_plan` field (see Service). The numbers below were measured
+when it was still an ablation.
 
 | | Goal-aware K = 16 | Consistent K = 16 | Goal-aware K = 64 | Consistent K = 64 |
 |---|---|---|---|---|
@@ -374,6 +376,108 @@ history all K candidates are slow, and the seam is the new plan's first steps
 departing from the old plan's continuation, which every candidate does. K = 64
 costs twice the time and does not change the picture (the synthetic-route
 differences between K = 16 and 64 are within run-to-run variance at five runs).
+
+### Starting plateau: three fixes screened, none adopted (walk only)
+
+**Open loop already slows down.** On test windows (walk, label ≥ 0.8), grouped by the
+speed at the end of the history, mean speed in the 1st / 2nd / 3rd second of the
+plan (five seeds; seed std 0.01 to 0.02):
+
+| History end speed | n | Capture | Flow (selected plan) | Flow (mean of 16) |
+|---|---|---|---|---|
+| < 0.3 m/s | 75 | 0.57 / 0.81 / 0.74 | 0.49 / 0.67 / 0.49 | 0.47 / 0.64 / 0.53 |
+| 0.3 to 0.6 | 68 | 0.76 / 0.85 / 0.87 | 0.66 / 0.78 / 0.61 | 0.65 / 0.77 / 0.63 |
+| > 0.6 | 730 | 1.21 / 1.18 / 1.17 | 1.13 / 0.99 / 0.92 | 1.13 / 1.01 / 0.94 |
+
+The model is too slow on real histories as well, and drops off in the third second
+even when the history is fast. So the plateau is not only a closed-loop drift out of
+distribution: the open-loop plan is conservative, and closed loop starts each new
+plan from that slow output.
+
+**Fixes** (switches, all off by default; checkpoints and behaviour unchanged):
+
+- A: classifier-free guidance on the target speed, `speed_guidance` w = 1.5, 2, 3
+  (two network passes per flow step).
+- B: Gaussian noise on the past history positions during training, current pose
+  untouched, velocities recomputed (`training.history_noise_position` / `_yaw`).
+  B1 0.01 m / 0.02 rad (about 0.14 m/s velocity noise, near the 10 Hz speed
+  jitter in the capture); B2 0.03 m / 0.05 rad (about 0.4 m/s, the size of the
+  plateau gap).
+- C: shorter history, `model.history_steps` 5 and 2 (0.5 s and 0.2 s); requests
+  still send 20 poses.
+- Combination: C2 + A2.
+
+**Success criteria, fixed in advance.** Time to 0.81 m/s from rest at 0.9 m/s
+within the human range 1.35 to 4.8 s on the 12 m straight and the Unity route; on
+the short captured walks arrival / capture within 0.9 to 1.1; open-loop ADE and
+fallback no worse than the baseline by more than two seed standard deviations
+(ADE ≤ 0.419, fallback ≤ 0.005).
+
+Captured walks of the test actor, consistent K = 16, five seeds:
+
+| Variant | Short: arrival / capture | Short: mean speed / capture | Short: seam / other accel | Long: arrival / capture | Open ADE (walk+run) | Open ADE (walk) | Fallback | Plan ms (p50) |
+|---|---|---|---|---|---|---|---|---|
+| Baseline | 1.07 ± 0.04 | 0.79 | 1.18 / 0.77 | 1.33 | 0.413 ± 0.003 | 0.341 | 0.3% | 22 |
+| A w = 1.5 | 1.03 ± 0.07 | 0.84 | 1.28 / 0.83 | 1.29 | 0.408 | 0.335 | 0.3% | 41 |
+| A w = 2 | 1.01 ± 0.07 | 0.85 | 1.40 / 0.85 | 1.21 | 0.412 | 0.332 | 0.4% | 41 |
+| A w = 3 | 0.99 ± 0.06 | 0.86 | 1.51 / 0.89 | 1.14 | 0.432 | 0.332 | 1.4% | 41 |
+| B1 | 1.08 ± 0.05 | 0.77 | 1.30 / 0.75 | 1.35 | 0.426 | 0.351 | 0.3% | 22 |
+| B2 | 1.13 ± 0.06 | 0.75 | 1.57 / 0.75 | 1.43 | 0.440 | 0.366 | 0.2% | 21 |
+| C 5 steps | 1.04 ± 0.05 | 0.84 | 1.15 / 0.78 | 1.29 | 0.415 | 0.342 | 0.2% | 21 |
+| C 2 steps | 1.03 ± 0.04 | 0.84 | 1.08 / 0.80 | 1.30 | 0.437 | 0.357 | 0.1% | 21 |
+| C2 + A2 | 0.98 ± 0.05 | 0.93 | 1.36 / 0.90 | 1.14 | 0.428 | 0.335 | 0.2% | 40 |
+| Spring (told the label) | 0.69 | 1.30 | 0.16 / 1.16 | 0.77 | 0.521 | – | – | – |
+
+Time to 0.81 m/s from rest at 0.9 m/s, 20 runs per route (five checkpoints × four
+sampling seeds):
+
+| Variant | 12 m: median | 12 m: in 1.35 to 4.8 s / faster | Unity: median | Unity: in 1.35 to 4.8 s |
+|---|---|---|---|---|
+| Baseline | 9.0 s | 2 / 3 | 11.5 s | 2 |
+| A w = 2 | 9.4 s | 2 / 3 | 8.9 s | 5 |
+| C 2 steps | 2.3 s | 6 / 8 | 8.2 s | 4 |
+| C2 + A2 | 3.8 s | 3 / 7 | 9.2 s | 1 |
+
+(The other variants were run once per checkpoint: means 6.4 to 13.3 s on 12 m and
+6.8 to 11.8 s on Unity.)
+
+**No variant meets the criteria.** Guidance raises speed once moving (mean speed,
+long-walk arrival, speed W1) but not the start, and costs twice the planning time;
+at w = 3 the fallback rate reaches 1.4%. History noise makes the model slower and
+less accurate. A 5-step history changes nothing. A 2-step history is the only fix
+that shortens the start, and only on the straight: there the times split between
+faster than any person (under 1.35 s in 8 of 20 runs) and the old plateau, while
+on the Unity route the median stays at 8 s. It also costs 0.024 m of open-loop ADE.
+None of the gains comes from leaving the corridor (maximum deviation unchanged) or
+from overshooting the asked speed (cruise p90 0.80 to 0.94 for 0.9). Guidance and
+history noise raise the seam jumps (1.18 to 1.36–1.57 m/s²).
+
+Why the start resists: the 2-step model is no faster than the baseline open loop on
+slow real histories (0.45 / 0.66 / 0.49 m/s in the first three seconds against
+0.49 / 0.67 / 0.49), so its closed-loop gain comes from forgetting the
+self-generated slow history rather than from a better start. What remains is the
+open-loop conservatism above: starts from rest are rare and varied in the training
+windows, the model's mean plan for them is slow, and every replan begins from that
+slow plan. History tricks and guidance on the speed label do not add the missing
+information about when a person commits to walking.
+
+**Leave-one-actor-out.** Train on four actors, evaluate closed loop on all
+rest-to-rest walks of the fifth (73 walks: 61 short, 12 long), three seeds per fold,
+last-epoch checkpoints (the held-out actor never picks the checkpoint). Mean ± std
+over the five folds:
+
+| Method | Short: arrival / capture | Short: mean speed / capture | Short: W1 speed / accel / turn | Short: seam / other accel | Long: arrival / capture | Long: mean speed / capture |
+|---|---|---|---|---|---|---|
+| Flow baseline | 1.11 ± 0.08 | 0.86 ± 0.09 | 0.133 / 0.228 / 0.166 | 0.98 / 0.70 | 1.00 ± 0.28 | 1.00 ± 0.29 |
+| Flow, 2-step history | 1.06 ± 0.05 | 0.90 ± 0.08 | 0.107 / 0.227 / 0.166 | 0.92 / 0.71 | 0.96 ± 0.28 | 1.04 ± 0.31 |
+| Spring (told the label) | 0.74 ± 0.07 | 1.29 ± 0.12 | 0.190 / 0.368 / 0.299 | 0.11 / 0.77 | 0.66 ± 0.14 | 1.48 ± 0.30 |
+
+Short-walk arrival / capture per held-out actor (baseline / 2-step / spring): actor
+1 (25 walks) 1.07 / 1.05 / 0.73; 2 (10) 1.22 / 1.15 / 0.83; 3 (16) 1.03 / 1.01 /
+0.67; 4 (2) 1.16 / 1.05 / 0.80; 5 (8) 1.08 / 1.04 / 0.69. The standard split's test
+actor (5) is typical, the flow model's ranking against the spring holds for every
+actor, and the 2-step history is a little faster on every actor. Long walks (one to
+three per actor) vary too much between actors to compare methods.
 
 ![Held-out windows](rootmotion-figures/test-windows-cpu.png)
 
@@ -408,7 +512,15 @@ python -m gtp.rootmotion.service --checkpoint runs/rootmotion_flow_cpu/best.pt -
 `target_speed`: `{"requested", "used", "clipped"}` with a `note` when the speed was
 clamped into the gait's training range, left unspecified, or ignored because the
 checkpoint is not speed-conditioned. `fallback` is true only for `hold`. Candidate
-selection defaults to goal-aware.
+selection defaults to consistent (K = 16).
+
+`previous_plan` (optional) is the part of the last plan the character has not yet
+executed, as world `[x, y, z]` points at 10 Hz starting one step after the current
+pose (at most 64 points). With it the planner picks the candidate that continues it
+best; without it selection is goal-aware. The response says whether it was used
+(`previous_plan_used`); a malformed list is a 400. `--speed-guidance w` (service,
+evaluate, closed_loop) turns on classifier-free guidance on the target speed; the
+default 1 is the unguided model.
 
 Closed-loop evaluation:
 
@@ -428,7 +540,9 @@ gaits); `--lock-on-arrival` stops at 0.25 m like the Unity follower.
   routes); run is not pursued further.
 - **Closed-loop starting plateau.** On walks longer than about 6 m flow spends 8 to
   17 s on a 0.3 to 0.6 m/s plateau before cruising (humans about 3 s), so routes take
-  longer than they take people.
+  longer than they take people. Speed guidance, history noise and shorter histories
+  did not remove it (see "Starting plateau"); the plan is already conservative open
+  loop.
 - **Small human reference.** Ten captured walks from one test actor, six
   length-matched human walks for the start comparison; LAFAN1's small capture
   volume makes long walks fold back.
@@ -436,9 +550,9 @@ gaits); `--lock-on-arrival` stops at 0.25 m like the Unity follower.
 ## Next steps
 
 1. Closed-loop starting plateau: plans conditioned on a slow history stay slow, and
-   candidate selection cannot fix it. Training on closed-loop rollouts, or making
-   the start of a walk a conditioned event rather than something inferred from the
-   history, are the candidates.
+   neither candidate selection, speed guidance, history noise nor a shorter history
+   fixes it. Making the start of a walk a conditioned event rather than something
+   inferred from the history, or training on closed-loop rollouts, remain untested.
 2. Arrival: goal-aware selection halves the gap; the rest needs the model itself to
    stop, for example classifier-free guidance on the goal flag or a much larger
    position-loss weight, and the closed-loop shuffling on the goal must stop.
