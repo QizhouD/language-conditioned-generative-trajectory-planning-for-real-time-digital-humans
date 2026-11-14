@@ -151,3 +151,17 @@ def test_route_grid_and_aggregate():
     summary = aggregate(rows)["routes"]["a"]
     assert summary["stop_error"]["mean"] == 2.0 and summary["stop_error"]["std"] == pytest.approx(math.sqrt(2))
     assert summary["settled"] == 0.5 and summary["arrived_in_time"] == 1.0
+
+
+def test_spring_params_default_to_the_untuned_spring_and_change_the_plan():
+    route = Route("straight", ((0.0, 0.0), (0.0, 8.0)), 0.0, "walk")
+    plain = simulate(route, baseline_plan_function("spring", STATS.gait_speed), gait_speed=1.0)
+    empty = simulate(route, baseline_plan_function("spring", STATS.gait_speed, {}), gait_speed=1.0)
+    assert np.array_equal(plain.poses, empty.poses)
+    tuned = simulate(route, baseline_plan_function(
+        "spring", STATS.gait_speed, {"speed_scale": 0.7, "halflife": 0.8, "deceleration": 1.0}), gait_speed=1.0)
+    assert len(tuned.poses) > len(plain.poses)  # slower, so it takes longer
+    with pytest.raises(ValueError):
+        baseline_plan_function("spring", STATS.gait_speed, {"stiffness": 1.0})
+    with pytest.raises(ValueError):
+        baseline_plan_function("constant", STATS.gait_speed, {"halflife": 0.5})

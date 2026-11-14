@@ -147,8 +147,24 @@ def model_plan_function(planner: RootMotionPlanner, generator: torch.Generator |
     return plan
 
 
-def baseline_plan_function(kind: str, gait_speed: Sequence[float]) -> PlanFunction:
-    """Spring or constant-speed follower on the same local frame as the model."""
+SPRING_TUNABLE = ("halflife", "deceleration", "arrival_seconds", "lookahead_seconds")
+
+
+def baseline_plan_function(kind: str, gait_speed: Sequence[float],
+                           spring_params: dict | None = None) -> PlanFunction:
+    """Spring or constant-speed follower on the same local frame as the model.
+
+    ``spring_params`` (spring only) tunes the follower: ``speed_scale`` multiplies the
+    target speed it is told, and any of ``SPRING_TUNABLE`` overrides spring_follow's
+    default. None keeps the untuned spring.
+    """
+    params = dict(spring_params or {})
+    scale = float(params.pop("speed_scale", 1.0))
+    unknown = set(params) - set(SPRING_TUNABLE)
+    if unknown:
+        raise ValueError(f"unknown spring parameters: {sorted(unknown)}")
+    if params and kind != "spring":
+        raise ValueError("spring_params apply to the spring follower only")
 
     def plan(request: dict, previous: np.ndarray | None = None) -> tuple[np.ndarray, int, dict]:
         batch, _ = build_batch(request)
@@ -161,7 +177,7 @@ def baseline_plan_function(kind: str, gait_speed: Sequence[float]) -> PlanFuncti
         given = request.get("target_speed")
         speed = float(given) if given is not None else gait_speed[int(batch["gait"][0])]
         if kind == "spring":
-            deltas = spring_follow(vertices, ends, velocity, speed)
+            deltas = spring_follow(vertices, ends, velocity, speed * scale, **params)
         elif kind == "constant":
             deltas = constant_speed_follow(vertices, ends, float(np.hypot(*velocity)), speed)
         else:

@@ -300,7 +300,9 @@ definition):
 Against the spring told the same speed, flow keeps its advantage on acceleration
 and turn-rate realism and on staying in the corridor, and loses on speed W1, path
 deviation, stop error, seams (0.96 against 0.03 m/s² at walk 0.9) and run speed
-tracking.
+tracking. This spring uses hand-set defaults and treats the p90 label as its cruise
+speed; "Tuned spring baseline" below repeats the closed-loop comparison against a
+spring tuned per fold.
 
 ### Where the walking time goes (walk only)
 
@@ -349,8 +351,9 @@ is the reference. Medians over walks, mean ± std over five seeds:
 | Constant speed | 0.62 | 1.54 | 0.319 | 0.851 | 0.817 | 0.71 |
 
 Flow is slower than the person who walked the route (about 20% longer on short
-walks, 40% on the two long ones); the spring told the same label is much faster
-than the person (a third shorter). Ten walks from one actor is a small sample.
+walks, 40% on the two long ones); the untuned spring told the same label is much
+faster than the person (a third shorter), mostly because it cruises at the p90
+label. Ten walks from one actor is a small sample.
 
 ### Replan-consistent selection (the default since f15c699)
 
@@ -492,9 +495,94 @@ Short-walk arrival / capture per held-out actor (baseline / 2-step / spring; see
 std 0.01 to 0.06): actor 1 (25 walks) 1.07 / 1.05 / 0.73; 2 (10) 1.22 / 1.15 /
 0.83; 3 (16) 1.03 / 1.01 / 0.67; 4 (2) 1.16 / 1.05 / 0.80; 5 (8) 1.08 / 1.04 /
 0.69. The standard split's test actor (5) is typical, and the flow model's ranking
-against the spring holds for every actor. The 2-step history is faster beyond seed
+against the untuned spring holds for every actor (against a tuned spring see the
+next section). The 2-step history is faster beyond seed
 noise on actors 2, 4 and 5 only. Long walks (one to three per actor; baseline
 arrival / capture 0.67 to 1.38 across actors) vary too much to compare methods.
+
+### Tuned spring baseline (walk, leave-one-actor-out)
+
+The spring above cruises at the p90 label and uses hand-set constants, so its
+losses may only mean it was not tuned. `baseline_plan_function("spring", ...,
+spring_params)` takes a `speed_scale` (cruise = scale × label) and overrides for
+`halflife`, `deceleration`, `arrival_seconds` and `lookahead_seconds`; the planner's
+own spring fallback keeps the defaults.
+
+**Tuning, per fold on the four training actors only.** Objective, averaged over the
+training actors' rest-to-rest walks: speed-by-progress RMSE divided by the walk's
+captured mean speed, plus |arrival / capture − 1| (both relative errors, equal
+weight). Random search: the defaults plus 400 draws (scale 0.5 to 1.1; halflife 0.1
+to 2 s and deceleration 0.2 to 4 m/s², log-uniform; arrival 0.3 to 2 s; lookahead
+0.05 to 1.5 s), then 80 multiplicative perturbations (σ 0.15 in log) around each
+fold's best; a fold chooses only among the 401 draws and its own 80. A first run
+with lookahead from 0.2 s put one fold on that bound, so the range was widened and
+the search rerun; no chosen value is near a bound.
+
+| Fold (held-out actor) | Scale | Halflife | Deceleration | Arrival | Lookahead | Objective, train: default → tuned | Held out: default → tuned |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.81 | 0.27 s | 0.77 | 1.54 s | 0.08 s | 0.64 → 0.46 | 0.64 → 0.44 |
+| 2 | 0.75 | 0.29 s | 0.60 | 1.74 s | 0.28 s | 0.69 → 0.48 | 0.39 → 0.34 |
+| 3 | 0.83 | 0.33 s | 0.77 | 1.29 s | 0.10 s | 0.58 → 0.40 | 0.82 → 0.60 |
+| 4 | 0.77 | 0.29 s | 0.70 | 1.08 s | 0.13 s | 0.63 → 0.45 | 0.68 → 0.47 |
+| 5 | 0.84 | 0.39 s | 2.48 | 1.46 s | 0.34 s | 0.64 → 0.44 | 0.62 → 0.51 |
+
+The folds agree: cruise at about 0.8 of the label, the default halflife, a much
+gentler braking (except fold 5), a longer arrival and a short look-ahead. The gain
+carries over to every held-out actor.
+
+**Closed loop on all 73 walks** (flow: the LOAO baseline, consistent K = 16, three
+seeds per fold), mean ± std over the five folds:
+
+| Method | Short: arrival / capture | Short: mean speed / capture | Short: profile RMSE | Short: W1 speed / accel / turn | Short: seam / other accel | Short: max dev | Long: arrival / capture | Long: W1 speed / accel / turn |
+|---|---|---|---|---|---|---|---|---|
+| Flow | 1.11 ± 0.08 | 0.86 ± 0.09 | 0.30 | 0.133 / 0.228 / 0.166 | 0.98 / 0.70 | 0.27 | 1.00 ± 0.28 | 0.258 / 0.216 / 0.281 |
+| Spring, untuned | 0.74 ± 0.07 | 1.29 ± 0.12 | 0.23 | 0.190 / 0.368 / 0.299 | 0.11 / 0.77 | 0.18 | 0.66 ± 0.14 | 0.450 / 0.459 / 0.234 |
+| Spring, tuned | 0.93 ± 0.11 | 1.04 ± 0.11 | 0.22 | 0.128 / 0.471 / 0.306 | 0.06 / 0.48 | 0.16 | 0.87 ± 0.22 | 0.303 / 0.511 / 0.293 |
+
+**Paired comparison, flow − tuned spring**, per walk (flow averaged over its seeds),
+95% bootstrap intervals over walks (10,000 resamples; pooled W1 recomputed on each
+resample, 2,000), with a cluster bootstrap over actors beside it. Significant means
+the walk-level interval excludes 0; ratios are judged by their distance from 1.
+
+| Metric | Short (61): flow − tuned [95% CI] | Actors favouring flow | Long (12): flow − tuned [95% CI] |
+|---|---|---|---|
+| \|arrival / capture − 1\| | +0.028 [−0.023, +0.080], tie | 1 / 5 | +0.043 [−0.041, +0.136], tie |
+| \|mean speed / capture − 1\| | +0.047 [+0.003, +0.090], spring (not at actor level) | 2 / 5 | +0.025 [−0.079, +0.129], tie |
+| Profile RMSE (m/s) | +0.077 [+0.053, +0.104], spring | 0 / 5 | +0.094 [+0.019, +0.170], spring |
+| W1 speed | −0.018 [−0.058, +0.022], tie | 3 / 5 | −0.069 [−0.195, +0.130], tie |
+| W1 acceleration | −0.241 [−0.265, −0.216], **flow** | 5 / 5 | −0.301 [−0.380, −0.221], **flow** |
+| W1 turn rate | −0.177 [−0.216, −0.133], **flow** | 4 / 5 | −0.030 [−0.184, +0.111], tie |
+| Seam acceleration (m/s²) | +0.895 [+0.840, +0.951], spring | 0 / 5 | +1.215 [+1.008, +1.441], spring |
+| Final distance (m) | +0.079 [+0.068, +0.090], spring | 0 / 5 | +0.079 [+0.060, +0.100], spring |
+| Maximum deviation (m) | +0.123 [+0.098, +0.145], spring | 0 / 5 | +0.046 [−0.041, +0.127], tie |
+
+Signed: flow arrives later (+0.20 short, +0.13 long, all actors) and walks slower
+(−0.19, −0.17); the tuned spring is about as much too fast as flow is too slow.
+Corridor: runs beyond 0.5 m are rare for both (flow 3 of 219, tuned spring 2 of 73,
+worst 0.57 and 0.53 m), so no win comes from cutting corners.
+
+**What is left of flow's advantage.** Tuning closes the timing gap: arrival and mean
+speed now tie (the spring was tuned on them), and so does speed W1. Flow still has
+clearly more human-like acceleration (short and long, every actor) and turn rate
+(short walks; long walks tie). The tuned spring is better on the speed profile (one
+of its tuning terms), on stopping at the goal, on path deviation and on seams. Tuning
+made the spring's acceleration W1 worse (0.368 → 0.471): the gentler braking and
+short look-ahead trade acceleration realism for timing. Flow was not tuned on these
+closed-loop metrics.
+
+**Synthetic routes at 0.9 m/s** (the five fold settings, untuned spring and flow for
+reference; humans reach 0.81 m/s after 2.8 s and average 0.72 of their label):
+
+| Method | Cruise | Time to 0.81 m/s, 12 m / Unity | Mean speed / asked, 12 m / Unity | Arrival, 12 m / Unity |
+|---|---|---|---|---|
+| Spring, untuned | 0.90 | 0.8 / 0.8 s | 0.97 / 0.97 | 13.5 / 12.3 s |
+| Spring, tuned (5 folds) | 0.67 to 0.76 | never | 0.73 to 0.81 / 0.73 to 0.80 | 16.2 to 18.0 / 14.8 to 16.4 s |
+| Flow (20 runs, median) | – | 9.0 / 11.5 s | 0.70 / 0.62 | 19.6 / 19.9 s |
+| Humans, 8 to 15 m | – | 2.8 s | 0.72 | – |
+
+The tuned spring matches the human average speed but cruises below 0.81 m/s, so it
+never reaches that mark: it buys the right mean with a uniformly slower walk rather
+than a human start-then-cruise profile.
 
 ![Held-out windows](rootmotion-figures/test-windows-cpu.png)
 
