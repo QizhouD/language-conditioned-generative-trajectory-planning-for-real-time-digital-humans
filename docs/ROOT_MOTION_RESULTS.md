@@ -12,7 +12,7 @@ again on an idle machine.
 ## Method under test
 
 - **Flow:** speed-conditioned flow model (`configs/rootmotion_flow_speed_cpu.yaml`,
-  587k parameters). Every request carries the target speed.
+  597k parameters). Every request carries the target speed.
 - **Selection:** consistent, K = 16. Among the valid candidates it takes the one
   closest to the unexecuted part of the previous plan; with no previous plan, or near
   the goal, it falls back to goal-aware.
@@ -73,9 +73,14 @@ In words:
   tie.
 - **What the tuned spring does better.** It is better on the speed profile, on stopping
   at the goal, on seams and (short walks) on path deviation.
-- **Direction of the timing error.** Flow arrives late (+0.20 short, +0.13 long, in
-  arrival / capture) and walks slow (−0.19, −0.17 in mean speed / capture). The tuned
-  spring errs in the opposite direction by about the same amount.
+- **Direction of the timing error.** Against the person, flow is late on short walks
+  (arrival / capture 1.11, mean speed / capture 0.86, fold means in T2) and on par on
+  long walks (1.00 / 1.00, T3). The tuned spring is early: 0.93 / 1.04 on short walks
+  and 0.87 / 1.17 on long walks.
+- **Gap between the methods.** Per walk, flow arrives later than the tuned spring
+  (+0.20 short, +0.13 long, in arrival / capture) and walks slower (−0.19, −0.17 in
+  mean speed / capture). These are differences between the two methods, not flow's
+  error against the capture.
 
 Caveats that belong with every use of this summary:
 
@@ -257,7 +262,9 @@ Script: `f_eval.py base` runs `python -m gtp.rootmotion.evaluate` on each seed (
 | Constant speed, told the label | 0.798 | 1.380 | – | 0.091 | – | 0.503 | 1.026 | 0.654 | 0.0% |
 | Capture (reference) | 0 | 0 | – | 0.104 | – | 0 | 0 | 0 | 0.0% |
 
-Flow's walk-only ADE is 0.341 ± 0.004.
+Flow's walk-only ADE is 0.341 ± 0.004. This is the `ade_walk` field that
+`gtp.rootmotion.evaluate` writes to `open_base_s*.json`, averaged over the 5 seeds;
+`f_table.py` does not print it.
 
 ## T8. Choice of selection rule (supporting)
 
@@ -278,8 +285,9 @@ ratios.
 | Short captured walks: mean speed / capture | 0.74 | 0.77 | 0.75 | 0.76 | 0.63 |
 
 - **Consistent vs goal-aware.** Consistent selection shortens arrival on short walks by
-  about 9% and lowers seam jumps by 7 to 18% at the same cost as goal-aware.
-- **K = 64.** It brings no clear further gain and doubles the planning time.
+  about 9% and lowers seam jumps by 7 to 18%.
+- **K = 64.** It brings no clear further gain and costs about twice the planning time
+  of K = 16. That is a relative figure from the uncited timings listed under T10.
 - **Seams.** They stay about 1.5 × the other steps.
 
 ## T9. Fixes for the starting plateau, screened and not adopted (supporting)
@@ -312,7 +320,8 @@ No variant meets all criteria.
 
 - **2-step history.** Only it shortens the start on the straight, and its start times
   there are bimodal.
-- **Guidance.** Doubles the planning time.
+- **Guidance.** Costs about twice the planning time (two network passes per flow
+  step; relative figure only, see T10).
 - **Why the start resists.** The plateau is a near fixed point that already appears in
   open loop. Asked for 0.9 m/s, a real 0.3 to 0.6 m/s history gets a first second of
   about 0.55 m/s (`f_openloop_ask09.py`). The closed loop's own history slows it by only
@@ -363,20 +372,25 @@ replaces it.
    - *Old:* "humans average about two thirds (0.67) of their label", "flow's
      mean / cruise of 0.65 matches the human 0.67", "from rest humans average 0.14 m/s
      in the first second", "humans enter the goal at 0.58 m/s".
-   - *Why it does not hold:* these came from 3 s training windows, which mix turning,
-     dawdling before a start and walks of every length.
+   - *Why it does not hold:* these came from training windows, measured over the span
+     up to the path's end (up to 25 m ahead). Those spans mix turning, dawdling before a
+     start and walks of every length.
    - *Replacement:* length-matched rest-to-rest walks (HUM). They give 0.72 of the
      label, 0.5 s to 0.45 m/s, 2.8 s to 0.81 m/s and 0.59 m/s entering the last 0.25 m.
    - *Other 0.67s are different quantities:* HUM's mean speed is 0.67 m/s, and the
      goal-aware flow's mean speed / asked on the 12 m straight was 0.67.
 3. **The open-loop plateau check mixed in high-speed labels.**
-   - *Old:* the first version measured open-loop speed by history end speed with each
-     window's own label (`f_openloop_check.py`). Those windows carry labels of 1.2 to
-     1.6 m/s, and the result was read as showing the model is too slow compared with
-     closed loop at 0.9.
+   - *Old:* "Open loop already slows down … The model is too slow on real histories as
+     well, and drops off in the third second even when the history is fast. So the
+     plateau is not only a closed-loop drift out of distribution: the open-loop plan is
+     conservative, and closed loop starts each new plan from that slow output."
+   - *Why it does not hold:* that check (`f_openloop_check.py`) used each window's own
+     label. Those windows carry labels averaging 1.2 to 1.56 m/s, far above the
+     0.9 m/s asked in closed loop, so the claim was stronger than the evidence.
    - *Replacement:* the comparable check asks every window for 0.9
-     (`f_openloop_ask09.py`), which gives the near fixed point in T9. The own-label
-     table must not be set against closed loop at 0.9 m/s.
+     (`f_openloop_ask09.py`), which gives the near fixed point in T9. The closed loop's
+     own history adds only 0.03 to 0.14 m/s of slowing. The own-label table must not be
+     set against closed loop at 0.9 m/s.
 4. **Goal-aware numbers presented as the method.**
    - *Old:* in `ROOT_MOTION_LAYER.md`, the "Flow at 0.9 m/s" table (8.5 / 16.7 s to
      0.81 m/s), the closed-loop tables at walk 0.9 and the open-loop "flow" row predate

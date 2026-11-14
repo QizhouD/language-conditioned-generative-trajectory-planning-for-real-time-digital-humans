@@ -7,7 +7,7 @@ Produces: captured-walk tables (short / long), synthetic-route tables, the open-
 Also imported by f_loao_*.py, g_checks.py and g_stats.py for SHORT (35 m), w1 and walk_block.
 Checkpoints: none.
 Run from the repository root with the project venv:
-  python scripts/rootmotion/f_table.py base A1.5 A2 A3 B1 B2 C5 C2 C2+A2 spring
+  python scripts/rootmotion/f_table.py base spring A1.5 A2 A3 B1 B2 C5 C2 C2+A2   # order of results/phase_f/tables.md
 """
 import json
 import statistics as st

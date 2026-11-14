@@ -42,7 +42,7 @@ python scripts/rootmotion/e_analyze1.py               # T8 (synthetic seams)
 python scripts/rootmotion/e_analyze2.py               # T8 (captured seams)
 python scripts/rootmotion/e_checks.py                 # T8 (short walks), human reference of T6
 python scripts/rootmotion/f_eval.py base spring A1.5 A2 A3 B1 B2 C5 C2 C2+A2
-python scripts/rootmotion/f_table.py base A1.5 A2 A3 B1 B2 C5 C2 C2+A2 spring   # T7, T9
+python scripts/rootmotion/f_table.py base spring A1.5 A2 A3 B1 B2 C5 C2 C2+A2   # T7, T9
 python scripts/rootmotion/f_resample.py base C2 A2 C2+A2 A1.5 A3 B1 B2 C5       # T6 flow, T9
 python scripts/rootmotion/f_openloop_ask09.py         # T9 notes
 python scripts/rootmotion/f_replan_bins.py base       # T9 notes
