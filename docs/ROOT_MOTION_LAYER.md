@@ -379,20 +379,27 @@ differences between K = 16 and 64 are within run-to-run variance at five runs).
 
 ### Starting plateau: three fixes screened, none adopted (walk only)
 
-**Open loop already slows down.** On test windows (walk, label ≥ 0.8), grouped by the
-speed at the end of the history, mean speed in the 1st / 2nd / 3rd second of the
-plan (five seeds; seed std 0.01 to 0.02):
+**The plateau already appears open loop.** On test windows (walk, label ≥ 0.8),
+grouped by the speed at the end of the history, mean speed in the 1st / 2nd / 3rd
+second of the plan (five seeds; seed std 0.01 to 0.02). With each window's own
+label the model is 0.08 to 0.10 m/s slower than the capture in the first second
+(the only second closed loop executes). Those windows carry labels of 1.2 to
+1.6 m/s, so the fair comparison with closed loop at 0.9 m/s asks every window for
+0.9, next to the baseline's own closed-loop replans (12 m and Unity, 20 runs each,
+more than 5 m of path left):
 
-| History end speed | n | Capture | Flow (selected plan) | Flow (mean of 16) |
-|---|---|---|---|---|
-| < 0.3 m/s | 75 | 0.57 / 0.81 / 0.74 | 0.49 / 0.67 / 0.49 | 0.47 / 0.64 / 0.53 |
-| 0.3 to 0.6 | 68 | 0.76 / 0.85 / 0.87 | 0.66 / 0.78 / 0.61 | 0.65 / 0.77 / 0.63 |
-| > 0.6 | 730 | 1.21 / 1.18 / 1.17 | 1.13 / 0.99 / 0.92 | 1.13 / 1.01 / 0.94 |
+| History end speed | n | Capture | Flow, own label | Flow, asked 0.9 | Closed-loop replans, 12 m / Unity (1st s) |
+|---|---|---|---|---|---|
+| < 0.3 m/s | 75 | 0.57 / 0.81 / 0.74 | 0.49 / 0.67 / 0.49 | 0.41 / 0.56 / 0.44 | 0.32 / 0.27 |
+| 0.3 to 0.6 | 68 | 0.76 / 0.85 / 0.87 | 0.66 / 0.78 / 0.61 | 0.55 / 0.64 / 0.50 | 0.52 / 0.49 |
+| > 0.6 | 730 | 1.21 / 1.18 / 1.17 | 1.13 / 0.99 / 0.92 | 0.97 / 0.80 / 0.75 | 0.70 / 0.62 |
 
-The model is too slow on real histories as well, and drops off in the third second
-even when the history is fast. So the plateau is not only a closed-loop drift out of
-distribution: the open-loop plan is conservative, and closed loop starts each new
-plan from that slow output.
+Asked for 0.9, a real 0.3 to 0.6 m/s history gets a first second at about 0.55 m/s,
+which lands the next replan in the same band: a near fixed point that needs no
+closed-loop drift. The self-generated history makes it 0.03 to 0.14 m/s slower
+still, a smaller effect. (The > 0.6 rows are not comparable: real histories there
+are mostly near 1.2 m/s, closed-loop ones just above 0.6. Asking these windows for
+0.9 is a counterfactual combination, and the slow bins hold only 68 to 75 windows.)
 
 **Fixes** (switches, all off by default; checkpoints and behaviour unchanged):
 
@@ -400,9 +407,8 @@ plan from that slow output.
   (two network passes per flow step).
 - B: Gaussian noise on the past history positions during training, current pose
   untouched, velocities recomputed (`training.history_noise_position` / `_yaw`).
-  B1 0.01 m / 0.02 rad (about 0.14 m/s velocity noise, near the 10 Hz speed
-  jitter in the capture); B2 0.03 m / 0.05 rad (about 0.4 m/s, the size of the
-  plateau gap).
+  B1 0.01 m / 0.02 rad (a small setting, about 0.14 m/s of velocity noise at
+  10 Hz); B2 0.03 m / 0.05 rad (about 0.4 m/s, the size of the plateau gap).
 - C: shorter history, `model.history_steps` 5 and 2 (0.5 s and 0.2 s); requests
   still send 20 poses.
 - Combination: C2 + A2.
@@ -415,7 +421,7 @@ fallback no worse than the baseline by more than two seed standard deviations
 
 Captured walks of the test actor, consistent K = 16, five seeds:
 
-| Variant | Short: arrival / capture | Short: mean speed / capture | Short: seam / other accel | Long: arrival / capture | Open ADE (walk+run) | Open ADE (walk) | Fallback | Plan ms (p50) |
+| Variant | Short: arrival / capture | Short: mean speed / capture | Short: seam / other accel | Long: arrival / capture | Open ADE (walk+run) | Open ADE (walk) | Open-loop fallback | Plan ms (p50) |
 |---|---|---|---|---|---|---|---|---|
 | Baseline | 1.07 ± 0.04 | 0.79 | 1.18 / 0.77 | 1.33 | 0.413 ± 0.003 | 0.341 | 0.3% | 22 |
 | A w = 1.5 | 1.03 ± 0.07 | 0.84 | 1.28 / 0.83 | 1.29 | 0.408 | 0.335 | 0.3% | 41 |
@@ -434,37 +440,47 @@ sampling seeds):
 | Variant | 12 m: median | 12 m: in 1.35 to 4.8 s / faster | Unity: median | Unity: in 1.35 to 4.8 s |
 |---|---|---|---|---|
 | Baseline | 9.0 s | 2 / 3 | 11.5 s | 2 |
+| A w = 1.5 | 9.9 s | 2 / 3 | 12.2 s | 2 |
 | A w = 2 | 9.4 s | 2 / 3 | 8.9 s | 5 |
+| A w = 3 | 9.1 s | 2 / 2 | 7.8 s | 5 |
+| B1 | 9.9 s | 2 / 1 | 14.3 s | 3 |
+| B2 | 9.9 s | 1 / 1 | 17.2 s | 5 |
+| C 5 steps | 9.4 s | 3 / 0 | 11.0 s | 4 |
 | C 2 steps | 2.3 s | 6 / 8 | 8.2 s | 4 |
 | C2 + A2 | 3.8 s | 3 / 7 | 9.2 s | 1 |
+| Spring | 0.8 s | – | 0.8 s | – |
 
-(The other variants were run once per checkpoint: means 6.4 to 13.3 s on 12 m and
-6.8 to 11.8 s on Unity.)
+Single runs per checkpoint mislead here (the baseline's per-checkpoint medians range
+from 0.9 to 16.8 s); every variant reaches 0.45 m/s within 0.5 to 2 s.
 
 **No variant meets the criteria.** Guidance raises speed once moving (mean speed,
 long-walk arrival, speed W1) but not the start, and costs twice the planning time;
-at w = 3 the fallback rate reaches 1.4%. History noise makes the model slower and
+at w = 3 the fallback rate reaches 1.4% open loop and 2.8% closed loop on the
+short walks. History noise makes the model slower and
 less accurate. A 5-step history changes nothing. A 2-step history is the only fix
 that shortens the start, and only on the straight: there the times split between
 faster than any person (under 1.35 s in 8 of 20 runs) and the old plateau, while
 on the Unity route the median stays at 8 s. It also costs 0.024 m of open-loop ADE.
 None of the gains comes from leaving the corridor (maximum deviation unchanged) or
-from overshooting the asked speed (cruise p90 0.80 to 0.94 for 0.9). Guidance and
+from overshooting the asked speed (cruise p90 0.80 to 0.94 for 0.9, except two
+2-step runs at 1.01). Guidance and
 history noise raise the seam jumps (1.18 to 1.36–1.57 m/s²).
 
-Why the start resists: the 2-step model is no faster than the baseline open loop on
-slow real histories (0.45 / 0.66 / 0.49 m/s in the first three seconds against
-0.49 / 0.67 / 0.49), so its closed-loop gain comes from forgetting the
-self-generated slow history rather than from a better start. What remains is the
-open-loop conservatism above: starts from rest are rare and varied in the training
-windows, the model's mean plan for them is slow, and every replan begins from that
-slow plan. History tricks and guidance on the speed label do not add the missing
-information about when a person commits to walking.
+Why the start resists. Measured: the plateau is the near fixed point above. The
+2-step model sits in it exactly like the baseline (first second 0.52 / 0.49 m/s in
+the 0.3 to 0.6 band) and is no faster open loop on slow real histories; once a
+sample pushes it past 0.6 m/s it keeps accelerating (0.82 / 0.68 against the
+baseline's 0.70 / 0.62), which explains its bimodal start times. Judgement, not
+tested: windows with a slow history and a label near 0.9 come mostly from slow,
+stop-and-go walking, so the conditional mean the model learns for them is slow;
+history tricks and guidance on the speed label do not add the missing information
+about when a person commits to walking.
 
 **Leave-one-actor-out.** Train on four actors, evaluate closed loop on all
 rest-to-rest walks of the fifth (73 walks: 61 short, 12 long), three seeds per fold,
 last-epoch checkpoints (the held-out actor never picks the checkpoint). Mean ± std
-over the five folds:
+over the five folds (pooled over all walks instead, short arrival / capture is 1.09
+baseline, 1.05 2-step, 0.73 spring):
 
 | Method | Short: arrival / capture | Short: mean speed / capture | Short: W1 speed / accel / turn | Short: seam / other accel | Long: arrival / capture | Long: mean speed / capture |
 |---|---|---|---|---|---|---|
@@ -472,12 +488,13 @@ over the five folds:
 | Flow, 2-step history | 1.06 ± 0.05 | 0.90 ± 0.08 | 0.107 / 0.227 / 0.166 | 0.92 / 0.71 | 0.96 ± 0.28 | 1.04 ± 0.31 |
 | Spring (told the label) | 0.74 ± 0.07 | 1.29 ± 0.12 | 0.190 / 0.368 / 0.299 | 0.11 / 0.77 | 0.66 ± 0.14 | 1.48 ± 0.30 |
 
-Short-walk arrival / capture per held-out actor (baseline / 2-step / spring): actor
-1 (25 walks) 1.07 / 1.05 / 0.73; 2 (10) 1.22 / 1.15 / 0.83; 3 (16) 1.03 / 1.01 /
-0.67; 4 (2) 1.16 / 1.05 / 0.80; 5 (8) 1.08 / 1.04 / 0.69. The standard split's test
-actor (5) is typical, the flow model's ranking against the spring holds for every
-actor, and the 2-step history is a little faster on every actor. Long walks (one to
-three per actor) vary too much between actors to compare methods.
+Short-walk arrival / capture per held-out actor (baseline / 2-step / spring; seed
+std 0.01 to 0.06): actor 1 (25 walks) 1.07 / 1.05 / 0.73; 2 (10) 1.22 / 1.15 /
+0.83; 3 (16) 1.03 / 1.01 / 0.67; 4 (2) 1.16 / 1.05 / 0.80; 5 (8) 1.08 / 1.04 /
+0.69. The standard split's test actor (5) is typical, and the flow model's ranking
+against the spring holds for every actor. The 2-step history is faster beyond seed
+noise on actors 2, 4 and 5 only. Long walks (one to three per actor; baseline
+arrival / capture 0.67 to 1.38 across actors) vary too much to compare methods.
 
 ![Held-out windows](rootmotion-figures/test-windows-cpu.png)
 
@@ -541,8 +558,8 @@ gaits); `--lock-on-arrival` stops at 0.25 m like the Unity follower.
 - **Closed-loop starting plateau.** On walks longer than about 6 m flow spends 8 to
   17 s on a 0.3 to 0.6 m/s plateau before cruising (humans about 3 s), so routes take
   longer than they take people. Speed guidance, history noise and shorter histories
-  did not remove it (see "Starting plateau"); the plan is already conservative open
-  loop.
+  did not remove it (see "Starting plateau"); the slow plan is a near fixed point
+  that already appears open loop.
 - **Small human reference.** Ten captured walks from one test actor, six
   length-matched human walks for the start comparison; LAFAN1's small capture
   volume makes long walks fold back.
